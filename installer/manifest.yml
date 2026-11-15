@@ -1,0 +1,10 @@
+name: p2visiblelines
+version: 0.7.0
+authors:
+  - Project 2
+description: Separate orthographic visible and dashed hidden line commands for Rhino 9.
+icon: icon.png
+keywords:
+  - make2d
+  - hidden-lines
+  - drawing
