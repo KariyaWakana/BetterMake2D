@@ -18,12 +18,12 @@ for %%F in ("%~dp0p2visiblelines-*-rh9*-win.yak") do if exist "%%~fF" (
     set "package=%%~fF"
 )
 if not defined package (
-    echo No P2VisibleLines package was found next to Install.cmd.
+    echo No Better Make2D package was found next to Install.cmd.
     goto failed
 )
 if not exist "%~dp0InstallToolbar.ps1" goto missing_toolbar
 if not exist "%~dp0P2VisibleLines.rui" goto missing_toolbar
-powershell.exe -NoProfile -NonInteractive -Command "if (Get-Process -Name Rhino -ErrorAction SilentlyContinue) { exit 1 }"
+powershell.exe -NoProfile -NonInteractive -Command "if (Get-Process -Name Rhino -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }) { exit 1 }"
 if errorlevel 1 (
     echo Close Rhino 9, then run Install.cmd again.
     goto failed
@@ -36,7 +36,7 @@ if errorlevel 1 (
     goto failed
 )
 echo.
-echo Restart Rhino 9, then run P2VisibleLines or P2HiddenLines.
+echo Restart Rhino 9, then run BetterMake2D or BetterMake2DHidden.
 if /i not "%~1"=="--no-pause" pause
 exit /b 0
 
@@ -45,7 +45,7 @@ echo Extract all the installation files before running Install.cmd.
 goto failed
 
 :multiple
-echo Keep one P2VisibleLines package next to Install.cmd and run it again.
+echo Keep one Better Make2D package next to Install.cmd and run it again.
 :failed
 if /i not "%~1"=="--no-pause" pause
 exit /b 1

@@ -19,6 +19,13 @@ function Read-Rui([string]$Path) {
     return $xml
 }
 
+function Get-RuiHash([string]$Path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return [Convert]::ToBase64String($sha.ComputeHash([IO.File]::ReadAllBytes($Path)))
+    } finally { $sha.Dispose() }
+}
+
 function Get-ButtonId([string]$ToolbarId, [string]$ButtonId) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
@@ -28,7 +35,7 @@ function Get-ButtonId([string]$ToolbarId, [string]$ButtonId) {
 }
 
 $RuiPath = (Resolve-Path -LiteralPath $RuiPath).Path
-$originalHash = (Get-FileHash -LiteralPath $RuiPath).Hash
+$originalHash = (Get-RuiHash $RuiPath)
 $rui = Read-Rui $RuiPath
 $template = Read-Rui $TemplatePath
 $macros = $rui.SelectSingleNode('/RhinoUI/macros')
@@ -38,12 +45,23 @@ if (!$macros -or !$icons) { throw 'The current toolbar file does not have the Rh
 $make2dMacroIds = @($macros.SelectNodes('macro_item') | Where-Object {
     $_.SelectSingleNode('script').InnerText -match '^\s*!?\s*_?Make2D\s*$'
 } | ForEach-Object { $_.GetAttribute('guid') })
-$templateButtons = @($template.SelectNodes('/RhinoUI/tool_bars/tool_bar/tool_bar_item'))
-$draftingId = '90fd89fc-e41f-49cc-bcf0-29e0d58017a1'
+$templateButton = $template.SelectSingleNode('/RhinoUI/tool_bars/tool_bar/tool_bar_item')
+$formerHiddenButtonId = Get-ButtonId '90fd89fc-e41f-49cc-bcf0-29e0d58017a1' '53dd3d79-5784-422f-ae0a-be17a7165aeb'
+$formerHiddenIconId = 'd15ebd3e-bab3-4e44-b733-f23d6e4a2c38'
 $changed = $false
 $locations = @()
 
 foreach ($bar in $rui.SelectNodes('/RhinoUI/tool_bars/tool_bar')) {
+    $barId = $bar.GetAttribute('guid')
+    if ($barId -eq '00211289-60a5-460b-88dc-cc667b234dbd') {
+        $recentId = Get-ButtonId $barId $templateButton.GetAttribute('guid')
+        $injected = $bar.SelectSingleNode("tool_bar_item[@guid='$recentId']")
+        if ($injected) {
+            [void]$bar.RemoveChild($injected)
+            $changed = $true
+        }
+        continue
+    }
     $anchor = $bar.SelectNodes('tool_bar_item') | Where-Object {
         $make2dMacroIds -contains $_.SelectSingleNode('left_macro_id').InnerText
     } | Select-Object -First 1
@@ -51,22 +69,35 @@ foreach ($bar in $rui.SelectNodes('/RhinoUI/tool_bars/tool_bar')) {
     $barId = $bar.GetAttribute('guid')
     $name = $bar.SelectSingleNode('text/locale_1033').InnerText
     $locations += $name
-    $buttons = if ($barId -eq $draftingId -or $name -eq 'Drafting') { $templateButtons } else { $templateButtons[0] }
-    foreach ($button in $buttons) {
-        $id = Get-ButtonId $barId $button.GetAttribute('guid')
-        $existing = $bar.SelectSingleNode("tool_bar_item[@guid='$id']")
-        if (!$existing) {
-            $existing = $rui.ImportNode($button, $true)
-            $existing.SetAttribute('guid', $id)
-            [void]$bar.InsertAfter($existing, $anchor)
-            $changed = $true
-        }
-        $anchor = $existing
+    $id = Get-ButtonId $barId $templateButton.GetAttribute('guid')
+    $installedButton = $bar.SelectSingleNode("tool_bar_item[@guid='$id']")
+    if ($installedButton) {
+        $left = $installedButton.SelectSingleNode('left_macro_id').InnerText
+        $right = $installedButton.SelectSingleNode('right_macro_id').InnerText
+        $leftScript = $macros.SelectSingleNode("macro_item[@guid='$left']/script").InnerText
+        $rightScript = $macros.SelectSingleNode("macro_item[@guid='$right']/script").InnerText
+        if ($leftScript -ne '! _P2VisibleLines' -or $rightScript -ne '! _P2HiddenLines') { continue }
     }
+    $button = $rui.ImportNode($templateButton, $true)
+    $button.SetAttribute('guid', $id)
+    if ($installedButton) { [void]$bar.ReplaceChild($button, $installedButton) }
+    else { [void]$bar.InsertAfter($button, $anchor) }
+    $changed = $true
+}
+
+foreach ($formerButton in $rui.SelectNodes("/RhinoUI/tool_bars/tool_bar/tool_bar_item[@guid='$formerHiddenButtonId']")) {
+    $macroId = $formerButton.SelectSingleNode('left_macro_id').InnerText
+    $macro = $macros.SelectSingleNode("macro_item[@guid='$macroId']")
+    if ($macro.SelectSingleNode('script').InnerText -ne '! _P2HiddenLines') { continue }
+    [void]$formerButton.ParentNode.RemoveChild($formerButton)
+    if (!$rui.SelectSingleNode("//*[self::left_macro_id or self::right_macro_id or self::macro_id][text()='$macroId']")) {
+        [void]$macros.RemoveChild($macro)
+    }
+    $changed = $true
 }
 
 if ($locations.Count -eq 0) {
-    Write-Warning 'No native Make2D button was found in this layout. The separate P2 Make2D toolbar is available instead.'
+    Write-Warning 'No native Make2D button was found in this layout. The separate Better Make2D toolbar is available instead.'
     exit 0
 }
 
@@ -82,16 +113,22 @@ foreach ($section in @($macros, $icons)) {
     }
 }
 
-if (!$changed) { Write-Output 'P2 Make2D buttons are already installed.'; exit 0 }
+$formerIcon = $icons.SelectSingleNode("icon[@guid='$formerHiddenIconId']")
+if ($formerIcon -and !$rui.SelectSingleNode("//*[@bitmap_id='$formerHiddenIconId']")) {
+    [void]$icons.RemoveChild($formerIcon)
+    $changed = $true
+}
+
+if (!$changed) { Write-Output 'Better Make2D buttons are already installed.'; exit 0 }
 $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')
 $copy = "$RuiPath.p2-$stamp.tmp"
 $backup = "$RuiPath.p2-$stamp.bak"
 try {
     $rui.Save($copy)
-    if ((Get-FileHash -LiteralPath $RuiPath).Hash -ne $originalHash) { throw 'The toolbar file changed during installation. Close Rhino and retry.' }
+    if ((Get-RuiHash $RuiPath) -ne $originalHash) { throw 'The toolbar file changed during installation. Close Rhino and retry.' }
     [IO.File]::Replace($copy, $RuiPath, $backup)
 } finally {
     if (Test-Path -LiteralPath $copy) { Remove-Item -LiteralPath $copy }
 }
-Write-Output "Added P2 Make2D buttons to: $($locations -join ', ')."
+Write-Output "Added Better Make2D buttons to: $($locations -join ', ')."
 Write-Output "Toolbar backup: $backup"

@@ -26,7 +26,8 @@ namespace Project2.VisibleLines
             }
             if (!alignment.IsValid)
             {
-                RhinoApp.WriteLine("No visible projection to use as an insertion reference.");
+                RhinoApp.WriteLine(UiText.Get("No visible projection to use as an insertion reference.",
+                    "没有可用作插入基准的可见投影。", "挿入基準にできる可視線の投影がありません。"));
                 return Result.Nothing;
             }
 
@@ -64,11 +65,13 @@ namespace Project2.VisibleLines
             }
             if (output.Count == 0)
             {
-                RhinoApp.WriteLine("No separate hidden edges in the selected projection.");
+                RhinoApp.WriteLine(UiText.Get("No separate hidden edges in the selected projection.",
+                    "当前投影中没有独立的隐藏边。", "この投影には独立した隠線がありません。"));
                 return Result.Nothing;
             }
 
-            var result = RhinoGet.GetPoint("Pick the same insertion point as the visible drawing", false, out var point);
+            var result = RhinoGet.GetPoint(UiText.Get("Pick the same insertion point as the visible drawing",
+                "指定与可见线图相同的插入点", "可視線図と同じ挿入点を指定"), false, out var point);
             if (result != Result.Success)
                 return result;
             int linetype = FindDashPattern(doc);
@@ -76,7 +79,7 @@ namespace Project2.VisibleLines
                 return Result.Failure;
             var layer = new Layer
             {
-                Name = $"P2HiddenLines-{DateTime.Now:yyyyMMdd-HHmmss-fff}-Hidden",
+                Name = $"BetterMake2DHidden-{DateTime.Now:yyyyMMdd-HHmmss-fff}-Hidden",
                 Color = Color.FromArgb(145, 151, 155),
                 LinetypeIndex = linetype,
                 PlotWeight = .08
@@ -102,7 +105,8 @@ namespace Project2.VisibleLines
                     added++;
             }
             doc.Views.Redraw();
-            RhinoApp.WriteLine($"Added {added} hidden curves. Coincident projections omitted: {coincident}.");
+            RhinoApp.WriteLine(UiText.Get("Added {0} hidden curves. Coincident projections omitted: {1}.",
+                "已添加 {0} 条隐藏线，省略了 {1} 条重合投影。", "隠線を {0} 本追加し、重複する投影線を {1} 本省略しました。"), added, coincident);
             return added == output.Count ? Result.Success : Result.Failure;
         }
 
@@ -110,7 +114,7 @@ namespace Project2.VisibleLines
         {
             const double dash = 75;
             const double gap = 55;
-            const string baseName = "P2 Hidden 75-55";
+            const string baseName = "Better Make2D Hidden 75-55";
             for (int number = 1; ; number++)
             {
                 string name = number == 1 ? baseName : $"{baseName} {number}";

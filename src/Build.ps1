@@ -22,7 +22,7 @@ foreach ($file in @($runtime) + @($rhinoCommon)) {
     $references.Add([Microsoft.CodeAnalysis.MetadataReference]::CreateFromFile($file))
 }
 $trees = [Microsoft.CodeAnalysis.SyntaxTree[]]@(foreach ($file in @(
-    'AssemblyInfo.cs', 'FeatureLinePolicy.cs', 'HiddenLineOutput.cs', 'VisibleFill.cs', 'VisibleLinesPlugin.cs'
+    'AssemblyInfo.cs', 'FeatureLinePolicy.cs', 'HiddenLineOutput.cs', 'VisibleFill.cs', 'UiText.cs', 'VisibleLinesPlugin.cs'
 )) {
     $path = Join-Path $PSScriptRoot $file
     [Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree]::ParseText(

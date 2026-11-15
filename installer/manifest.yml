@@ -1,8 +1,8 @@
 name: p2visiblelines
-version: 0.7.1
+version: 0.8.0
 authors:
   - Project 2
-description: Separate orthographic visible and dashed hidden line commands for Rhino 9.
+description: Better Make2D creates visible and hidden line drawings from parallel and perspective Rhino 9 views.
 icon: icon.png
 keywords:
   - make2d

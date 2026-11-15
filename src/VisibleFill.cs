@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using Rhino.DocObjects;
 using Rhino.Geometry;
 using Rhino.Geometry.Intersect;
 
@@ -13,7 +14,7 @@ namespace Project2.VisibleLines
         internal readonly record struct Region(Hatch Hatch, string Instance, Curve[] Loops);
 
         internal static List<Region> Compute(IEnumerable<Curve> boundaries, List<Part> parts,
-            Transform worldToDrawing, Vector3d direction, List<Plane> clipping, double tolerance,
+            Transform worldToDrawing, ViewportInfo viewport, List<Plane> clipping, double tolerance,
             out int unresolved)
         {
             unresolved = 0;
@@ -21,33 +22,62 @@ namespace Project2.VisibleLines
             if (!worldToDrawing.TryGetInverse(out var drawingToWorld))
                 return output;
 
+            var direction = viewport.CameraDirection;
+            if (!direction.Unitize()) return output;
+            bool perspective = viewport.IsPerspectiveProjection;
+            var camera = viewport.CameraLocation;
+            double frustumNear = perspective ? viewport.FrustumNear : 0;
+            double frustumFar = perspective ? viewport.FrustumFar : 0;
+            if (perspective && (!(frustumNear > 0) || !(frustumFar > frustumNear))) return output;
+            var drawingBounds = BoundingBox.Empty;
+            foreach (var curve in boundaries)
+                drawingBounds.Union(curve.GetBoundingBox(true));
+            if (!drawingBounds.IsValid) return output;
+
             var projected = parts.Select(p =>
             {
                 var shape = p.Geometry.Duplicate();
                 shape.Transform(p.Placement);
-                return (Part: p, Shape: shape, Bounds: shape.GetBoundingBox(worldToDrawing));
+                return (Part: p, Shape: shape, WorldBounds: shape.GetBoundingBox(true));
             }).ToArray();
 
             using var index = new RTree();
             double near = double.NegativeInfinity, far = double.PositiveInfinity;
             var origin = Point3d.Origin;
             origin.Transform(drawingToWorld);
-            direction.Unitize();
             var front = -direction;
             for (int i = 0; i < projected.Length; i++)
             {
-                var b = projected[i].Bounds;
-                index.Insert(new BoundingBox(b.Min.X, b.Min.Y, -1, b.Max.X, b.Max.Y, 1), i);
-                foreach (var p in projected[i].Shape.GetBoundingBox(true).GetCorners())
+                var shape = projected[i];
+                var corners = shape.WorldBounds.GetCorners();
+                BoundingBox bounds;
+                if (perspective)
                 {
-                    double z = (p - origin) * front;
-                    near = Math.Max(near, z);
-                    far = Math.Min(far, z);
+                    var depths = corners.Select(p => (p - camera) * direction).ToArray();
+                    if (depths.Length == 0 || depths.Max() < frustumNear || depths.Min() > frustumFar) continue;
+                    // A box crossing the near plane can project outside its transformed corner bounds.
+                    bounds = depths.Min() < frustumNear ? drawingBounds :
+                        new BoundingBox(corners.Select(p => worldToDrawing * p));
                 }
+                else
+                {
+                    bounds = shape.Shape.GetBoundingBox(worldToDrawing);
+                    foreach (var p in corners)
+                    {
+                        double z = (p - origin) * front;
+                        near = Math.Max(near, z);
+                        far = Math.Min(far, z);
+                    }
+                }
+                if (bounds.IsValid)
+                    index.Insert(new BoundingBox(bounds.Min.X, bounds.Min.Y, -1, bounds.Max.X, bounds.Max.Y, 1), i);
             }
-            double padding = Math.Max(tolerance * 32, (near - far) * .01);
-            near += padding;
-            far -= padding;
+            if (!perspective)
+            {
+                double padding = Math.Max(tolerance * 32, (near - far) * .01);
+                near += padding;
+                far -= padding;
+            }
 
             double rayTolerance = tolerance * .12;
             double containmentTolerance = tolerance * .035;
@@ -58,8 +88,23 @@ namespace Project2.VisibleLines
                 var found = new List<(int Id, double Depth)>();
                 var world = p;
                 world.Transform(drawingToWorld);
-                var start = world + front * near;
-                var stop = world + front * far;
+                var rayDirection = direction;
+                Point3d start;
+                Point3d stop;
+                if (perspective)
+                {
+                    rayDirection = world - camera;
+                    if (!rayDirection.Unitize()) return -1;
+                    double axialComponent = rayDirection * direction;
+                    if (axialComponent <= 0) return -1;
+                    start = camera + rayDirection * (frustumNear / axialComponent);
+                    stop = camera + rayDirection * (frustumFar / axialComponent);
+                }
+                else
+                {
+                    start = world + front * near;
+                    stop = world + front * far;
+                }
                 using var ray = new LineCurve(start, stop);
                 var d = new Vector3d(tolerance, tolerance, .25);
                 index.Search(new BoundingBox(p - d, p + d), (sender, item) =>
@@ -70,14 +115,15 @@ namespace Project2.VisibleLines
                         Intersection.CurveBrep(ray, brep, rayTolerance, out _, out var hits);
                         if (hits == null) return;
                         double best = hits.Where(q => clipping.All(pl => pl.DistanceTo(q) <= tolerance))
-                            .Select(q => (q - start) * direction).Where(z => z >= 0)
+                            .Select(q => (q - start) * rayDirection).Where(z => z >= 0)
                             .DefaultIfEmpty(double.PositiveInfinity).Min();
                         if (double.IsFinite(best)) found.Add((item.Id, best));
                     }
                     else if (shape is Mesh mesh)
                     {
-                        double delta = Intersection.MeshRay(mesh, new Ray3d(start, direction));
-                        if (delta >= 0 && clipping.All(pl => pl.DistanceTo(start + direction * delta) <= tolerance))
+                        double delta = Intersection.MeshRay(mesh, new Ray3d(start, rayDirection));
+                        if (delta >= 0 && delta <= start.DistanceTo(stop) &&
+                            clipping.All(pl => pl.DistanceTo(start + rayDirection * delta) <= tolerance))
                             found.Add((item.Id, delta));
                     }
                 });

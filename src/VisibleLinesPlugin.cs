@@ -27,14 +27,15 @@ namespace Project2.VisibleLines
         internal static Result Project(RhinoDoc doc, bool hiddenOnly)
         {
             var view = doc.Views.ActiveView?.ActiveViewport;
-            if (view == null || !view.IsParallelProjection)
+            if (view == null)
             {
-                RhinoApp.WriteLine("Use a parallel viewport.");
+                RhinoApp.WriteLine(UiText.Get("An active viewport is required.", "请先激活一个工作视图。", "作業するビューポートを選択してください。"));
                 return Result.Failure;
             }
 
             using var get = new GetObject();
-            get.SetCommandPrompt("Select parts and any objects that should occlude them");
+            get.SetCommandPrompt(UiText.Get("Select parts and any objects that should occlude them",
+                "选择要投影的构件及其遮挡物", "投影する部材と遮蔽物を選択"));
             get.GeometryFilter = ObjectType.Surface | ObjectType.Brep | ObjectType.Extrusion |
                 ObjectType.InstanceReference | ObjectType.Mesh;
             var fill = new OptionToggle(false, "No", "Yes");
@@ -80,7 +81,8 @@ namespace Project2.VisibleLines
             {
                 doc.Objects.UnselectAll();
                 using var detail = new GetObject();
-                detail.SetCommandPrompt("Select source parts to refine for closed fill");
+                detail.SetCommandPrompt(UiText.Get("Select source parts to refine for closed fill",
+                    "选择需要细化闭合填充的原始构件", "閉じた塗りつぶしを詳細化する元の部材を選択"));
                 detail.GeometryFilter = get.GeometryFilter;
                 detail.EnablePreSelect(false, true);
                 detail.GetMultiple(1, 0);
@@ -92,13 +94,15 @@ namespace Project2.VisibleLines
                 doc.Objects.UnselectAll();
                 if (detailParts.Count == 0)
                 {
-                    RhinoApp.WriteLine("Refinement requires parts from the first selection.");
+                    RhinoApp.WriteLine(UiText.Get("Refinement requires parts from the first selection.",
+                        "细化对象须来自第一轮选择。", "詳細化する部材は最初に選択した部材から選んでください。"));
                     return Result.Failure;
                 }
             }
             using var drawing = HiddenLineDrawing.Compute(settings, true);
             if (drawing == null)
                 return Result.Failure;
+            using var projectedView = drawing.Viewport;
 
             var counters = new Dictionary<FeatureLine, int>();
             var curves = new List<(Curve Curve, FeatureLine Kind, string Source)>();
@@ -150,24 +154,29 @@ namespace Project2.VisibleLines
             }
             if (curves.Count == 0)
                 return Result.Nothing;
-            RhinoApp.WriteLine($"Drawing contains {curves.Count} visible segments from {leaves} model parts.");
+            RhinoApp.WriteLine(UiText.Get("Drawing contains {0} visible segments from {1} model parts.",
+                "已从 {1} 个构件提取 {0} 段可见线。", "{1} 個の部材から可視線を {0} 本抽出しました。"), curves.Count, leaves);
             if (detailParts.Count > 0)
             {
                 int added = AppendDetailBoundaries(boundaries, detailParts, view, clips, drawing.WorldToHiddenLine,
                     doc.ModelAbsoluteTolerance);
-                RhinoApp.WriteLine($"Fill refinement: {added} original projected curves from {detailParts.Count} detail parts.");
+                RhinoApp.WriteLine(UiText.Get("Fill refinement: {0} original projected curves from {1} detail parts.",
+                    "细化填充时从 {1} 个构件补充了 {0} 条原始投影曲线。",
+                    "塗りつぶしの詳細化に {1} 個の部材から投影曲線を {0} 本追加しました。"), added, detailParts.Count);
             }
             if (contacts.CurrentValue && detailParts.Count > 0)
             {
-                int contactCount = AppendContactBoundaries(boundaries, detailParts, drawing.WorldToHiddenLine, doc.ModelAbsoluteTolerance);
-                RhinoApp.WriteLine($"Detail contact boundaries: {contactCount}.");
+                int contactCount = AppendContactBoundaries(boundaries, detailParts, projectedView, clips, drawing.WorldToHiddenLine,
+                    doc.ModelAbsoluteTolerance);
+                RhinoApp.WriteLine(UiText.Get("Detail contact boundaries: {0}.", "局部接触边界 {0} 条。", "部材の接触境界は {0} 本です。"), contactCount);
             }
             int unresolved = 0;
             var fills = fill.CurrentValue
-                ? VisibleFill.Compute(boundaries, parts, drawing.WorldToHiddenLine, view.CameraDirection, clips,
+                ? VisibleFill.Compute(boundaries, parts, drawing.WorldToHiddenLine, projectedView, clips,
                     contacts.CurrentValue && detailParts.Count > 0 ? doc.ModelAbsoluteTolerance / 2.2 : doc.ModelAbsoluteTolerance, out unresolved)
                 : new List<VisibleFill.Region>();
-            var placed = RhinoGet.GetPoint("Pick insertion point for the two-dimensional drawing", false, out var point);
+            var placed = RhinoGet.GetPoint(UiText.Get("Pick insertion point for the two-dimensional drawing",
+                "指定二维图的插入点", "2D 図面の挿入点を指定"), false, out var point);
             if (placed != Result.Success)
                 return placed;
             var box = BoundingBox.Empty;
@@ -181,7 +190,7 @@ namespace Project2.VisibleLines
             {
                 if (!layers.TryGetValue(entry.Kind, out int li))
                 {
-                    var layer = new Layer { Name = $"P2VisibleLines-{stamp}-{entry.Kind}" };
+                    var layer = new Layer { Name = $"BetterMake2D-{stamp}-{entry.Kind}" };
                     li = doc.Layers.Add(layer);
                     if (li < 0)
                         return Result.Failure;
@@ -196,8 +205,8 @@ namespace Project2.VisibleLines
             int fillsAdded = 0;
             if (fills.Count > 0)
             {
-                int fillLayer = doc.Layers.Add(new Layer { Name = $"P2VisibleLines-{stamp}-ClosedFills" });
-                int loopLayer = doc.Layers.Add(new Layer { Name = $"P2VisibleLines-{stamp}-FillBoundaries", IsVisible = false });
+                int fillLayer = doc.Layers.Add(new Layer { Name = $"BetterMake2D-{stamp}-ClosedFills" });
+                int loopLayer = doc.Layers.Add(new Layer { Name = $"BetterMake2D-{stamp}-FillBoundaries", IsVisible = false });
                 if (fillLayer < 0 || loopLayer < 0) return Result.Failure;
                 foreach (var region in fills)
                 {
@@ -217,13 +226,17 @@ namespace Project2.VisibleLines
             }
             doc.Views.Redraw();
             if (fill.CurrentValue)
-                RhinoApp.WriteLine($"Closed fills: {fillsAdded}; unresolved regions skipped: {unresolved}.");
-            RhinoApp.WriteLine($"Added {count} curves. Parameter seams omitted: {counters.GetValueOrDefault(FeatureLine.ParameterSeam)}.");
+                RhinoApp.WriteLine(UiText.Get("Closed fills: {0}; unresolved regions skipped: {1}.",
+                    "生成闭合填充 {0} 块，跳过未能闭合的区域 {1} 块。",
+                    "閉じた塗りつぶしは {0} 領域で、処理できなかった {1} 領域は省略しました。"), fillsAdded, unresolved);
+            RhinoApp.WriteLine(UiText.Get("Added {0} curves. Parameter seams omitted: {1}.",
+                "已添加 {0} 条曲线，省略了 {1} 条参数接缝线。", "曲線を {0} 本追加し、パラメータの継ぎ目を {1} 本省略しました。"),
+                count, counters.GetValueOrDefault(FeatureLine.ParameterSeam));
             return count == curves.Count && fillsAdded == fills.Count ? Result.Success : Result.Failure;
         }
 
         private static int AppendContactBoundaries(List<Curve> boundaries, List<VisibleFill.Part> parts,
-            Transform worldToDrawing, double tolerance)
+            ViewportInfo viewport, List<Plane> clips, Transform worldToDrawing, double tolerance)
         {
             var solids = parts.Where(part => part.Brep != null).Select(part =>
             {
@@ -234,6 +247,7 @@ namespace Project2.VisibleLines
             int originalCount = boundaries.Count;
             var projection = Transform.PlanarProjection(Plane.WorldXY) * worldToDrawing;
             double intersectionTolerance = tolerance / 18;
+            var perspectiveContacts = new List<Curve>();
             try
             {
                 for (int i = 0; i < solids.Length; i++)
@@ -246,16 +260,27 @@ namespace Project2.VisibleLines
                         continue;
                     foreach (var curve in curves)
                     {
-                        curve.Transform(projection);
-                        if (curve.IsValid && curve.GetLength() > intersectionTolerance)
+                        if (viewport.IsPerspectiveProjection)
+                            perspectiveContacts.Add(curve);
+                        else if (curve.Transform(projection) && curve.IsValid && curve.GetLength() > intersectionTolerance)
                             boundaries.Add(curve);
                         else
                             curve.Dispose();
                     }
                 }
+                if (perspectiveContacts.Count > 0)
+                {
+                    var settings = new HiddenLineDrawingParameters { AbsoluteTolerance = intersectionTolerance, Flatten = false };
+                    settings.SetViewport(viewport);
+                    foreach (var clip in clips) settings.AddClippingPlane(clip);
+                    foreach (var curve in perspectiveContacts) settings.AddGeometry(curve, null);
+                    using var contactDrawing = HiddenLineDrawing.Compute(settings, true);
+                    AppendProjectedSegments(boundaries, contactDrawing, worldToDrawing, intersectionTolerance, null, filterFeatures: false);
+                }
             }
             finally
             {
+                foreach (var curve in perspectiveContacts) curve.Dispose();
                 foreach (var solid in solids)
                     solid.Brep.Dispose();
             }
@@ -266,7 +291,6 @@ namespace Project2.VisibleLines
             Rhino.Display.RhinoViewport view, List<Plane> clips, Transform worldToDrawing, double tolerance)
         {
             int initialCount = boundaries.Count;
-            var origin = worldToDrawing * Point3d.Origin;
             var detailTolerance = tolerance / 4.5;
             foreach (var part in parts)
             {
@@ -285,25 +309,34 @@ namespace Project2.VisibleLines
                     continue;
 
                 using var projection = HiddenLineDrawing.Compute(settings, false);
-                if (projection == null)
-                    continue;
-                var localOrigin = projection.WorldToHiddenLine * Point3d.Origin;
-                var toDrawing = Transform.PlanarProjection(Plane.WorldXY) * Transform.Translation(origin - localOrigin);
-                foreach (var segment in projection.Segments)
-                {
-                    if (segment.SegmentVisibility != HiddenLineDrawingSegment.Visibility.Visible)
-                        continue;
-                    var source = segment.ParentCurve;
-                    var kind = FeatureLinePolicy.Classify(source.SilhouetteType, part.Brep, source.SourceObjectComponentIndex);
-                    if (!FeatureLinePolicy.ShouldDraw(kind, true))
-                        continue;
-                    var curve = segment.CurveGeometry.DuplicateCurve();
-                    curve.Transform(toDrawing);
-                    if (curve.IsValid && curve.GetLength() > detailTolerance / 4)
-                        boundaries.Add(curve);
-                }
+                AppendProjectedSegments(boundaries, projection, worldToDrawing, detailTolerance / 4, part.Brep, filterFeatures: true);
             }
             return boundaries.Count - initialCount;
+        }
+
+        private static void AppendProjectedSegments(List<Curve> boundaries, HiddenLineDrawing drawing,
+            Transform worldToDrawing, double tolerance, Brep sourceBrep, bool filterFeatures)
+        {
+            if (drawing == null || !drawing.WorldToHiddenLine.TryGetInverse(out var localToWorld))
+                return;
+            var toDrawing = Transform.PlanarProjection(Plane.WorldXY) * worldToDrawing * localToWorld;
+            foreach (var segment in drawing.Segments)
+            {
+                if (segment.SegmentVisibility != HiddenLineDrawingSegment.Visibility.Visible)
+                    continue;
+                if (filterFeatures)
+                {
+                    var source = segment.ParentCurve;
+                    var kind = FeatureLinePolicy.Classify(source.SilhouetteType, sourceBrep, source.SourceObjectComponentIndex);
+                    if (!FeatureLinePolicy.ShouldDraw(kind, true))
+                        continue;
+                }
+                var curve = segment.CurveGeometry.DuplicateCurve();
+                if (curve.Transform(toDrawing) && curve.IsValid && curve.GetLength() > tolerance)
+                    boundaries.Add(curve);
+                else
+                    curve.Dispose();
+            }
         }
 
         private static int AddObject(HiddenLineDrawingParameters settings, RhinoObject obj,
@@ -334,6 +367,22 @@ namespace Project2.VisibleLines
     public sealed class HiddenLineCommand : Command
     {
         public override string EnglishName => "P2HiddenLines";
+
+        protected override Result RunCommand(RhinoDoc doc, RunMode mode) => FeatureLineCommand.Project(doc, hiddenOnly: true);
+    }
+
+    [Guid("CFBB194C-2DF8-4B71-8339-12E5809F80D5")]
+    public sealed class BetterMake2DCommand : Command
+    {
+        public override string EnglishName => "BetterMake2D";
+
+        protected override Result RunCommand(RhinoDoc doc, RunMode mode) => FeatureLineCommand.Project(doc, hiddenOnly: false);
+    }
+
+    [Guid("03937D0B-82A4-4235-AD37-B01B0618904F")]
+    public sealed class BetterMake2DHiddenCommand : Command
+    {
+        public override string EnglishName => "BetterMake2DHidden";
 
         protected override Result RunCommand(RhinoDoc doc, RunMode mode) => FeatureLineCommand.Project(doc, hiddenOnly: true);
     }
