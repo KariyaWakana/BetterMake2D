@@ -1,5 +1,5 @@
 name: p2visiblelines
-version: 0.7.0
+version: 0.7.1
 authors:
   - Project 2
 description: Separate orthographic visible and dashed hidden line commands for Rhino 9.

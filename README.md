@@ -13,7 +13,7 @@
 
 Windows 用户解压安装包后，双击 `Install.cmd`，再重新启动 Rhino 9。安装脚本使用 Rhino 自带的 Yak 包管理器，将本地 `.yak` 安装到当前用户。也可在 `_PlugInManager` 里选择 `P2VisibleLines.rhp` 手动加载。
 
-项目针对 Rhino 9 的 .NET 10 运行时。以前手动安装过同名版本时，请在 Rhino 插件管理器确认使用 0.7.0；如有旧版本占用，先退出 Rhino，再运行安装程序。
+项目针对 Rhino 9 的 .NET 10 运行时。以前手动安装过同名版本时，请在 Rhino 插件管理器确认使用 0.7.1；如有旧版本占用，先退出 Rhino，再运行安装程序。
 
 [Rhino 包安装说明](https://developer.rhino3d.com/guides/yak/installing-and-managing-packages/)
 
