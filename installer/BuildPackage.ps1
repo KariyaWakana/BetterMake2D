@@ -16,6 +16,7 @@ try {
     Copy-Item -LiteralPath $binary.FullName -Destination $stage.FullName
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'manifest.yml') -Destination $stage.FullName
     Copy-Item -LiteralPath (Join-Path $root 'assets/icon.png') -Destination $stage.FullName
+    Copy-Item -LiteralPath (Join-Path $root 'toolbar/P2VisibleLines.rui') -Destination $stage.FullName
     Push-Location -LiteralPath $stage.FullName
     try {
         & $yak build --platform win | Out-Host
@@ -26,7 +27,7 @@ try {
     $package = @(Get-ChildItem -LiteralPath $stage.FullName -File -Filter '*-rh9*-win.yak')
     if ($package.Count -ne 1) { throw 'Expected exactly one Rhino 9 Windows package' }
     Copy-Item -LiteralPath $package[0].FullName -Destination $output -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install.cmd') -Destination $output -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install.cmd'), (Join-Path $PSScriptRoot 'InstallToolbar.ps1'), (Join-Path $root 'toolbar/P2VisibleLines.rui') -Destination $output -Force
     Get-Item -LiteralPath (Join-Path $output $package[0].Name)
 } finally {
     $expected = (Resolve-Path -LiteralPath (Join-Path $root 'artifacts')).Path.TrimEnd('\') + '\'

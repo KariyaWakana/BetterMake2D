@@ -21,12 +21,28 @@ if not defined package (
     echo No P2VisibleLines package was found next to Install.cmd.
     goto failed
 )
+if not exist "%~dp0InstallToolbar.ps1" goto missing_toolbar
+if not exist "%~dp0P2VisibleLines.rui" goto missing_toolbar
+powershell.exe -NoProfile -NonInteractive -Command "if (Get-Process -Name Rhino -ErrorAction SilentlyContinue) { exit 1 }"
+if errorlevel 1 (
+    echo Close Rhino 9, then run Install.cmd again.
+    goto failed
+)
 "%yak%" install "%package%"
 if errorlevel 1 goto failed
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0InstallToolbar.ps1"
+if errorlevel 1 (
+    echo The plug-in is installed, but the toolbar could not be updated.
+    goto failed
+)
 echo.
 echo Restart Rhino 9, then run P2VisibleLines or P2HiddenLines.
 if /i not "%~1"=="--no-pause" pause
 exit /b 0
+
+:missing_toolbar
+echo Extract all the installation files before running Install.cmd.
+goto failed
 
 :multiple
 echo Keep one P2VisibleLines package next to Install.cmd and run it again.

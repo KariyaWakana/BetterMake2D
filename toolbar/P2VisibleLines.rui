@@ -1,0 +1,120 @@
+<RhinoUI major_ver="5" minor_ver="0" guid="9fcf3cec-998c-48d6-b88b-23c7ae402b61" default_language_id="1033">
+  <extend_rhino_menus />
+  <menus />
+  <tool_bar_groups />
+  <tool_bars>
+    <tool_bar guid="da56d7ec-9a35-481f-bdbe-58feb81abff5" bitmap_id="37ecf442-effe-47fc-9fc0-c4b04af121f0">
+      <text>
+        <locale_1033>P2 Make2D</locale_1033>
+        <locale_2052>P2 出图</locale_2052>
+      </text>
+      <tool_bar_item guid="36f53cad-5149-4c09-a1b4-88704c179d73">
+        <text>
+          <locale_1033>P2 Visible Lines</locale_1033>
+          <locale_2052>P2 可见线</locale_2052>
+        </text>
+        <left_macro_id>da038060-4aa6-4c8a-b829-943216a28ad4</left_macro_id>
+        <right_macro_id>f6e45451-6374-4413-98e3-fc019c0027cb</right_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="53dd3d79-5784-422f-ae0a-be17a7165aeb">
+        <text>
+          <locale_1033>P2 Hidden Lines</locale_1033>
+          <locale_2052>P2 隐藏线</locale_2052>
+        </text>
+        <left_macro_id>f6e45451-6374-4413-98e3-fc019c0027cb</left_macro_id>
+      </tool_bar_item>
+    </tool_bar>
+  </tool_bars>
+  <macros>
+    <macro_item guid="da038060-4aa6-4c8a-b829-943216a28ad4" bitmap_id="37ecf442-effe-47fc-9fc0-c4b04af121f0">
+      <button_text>
+        <locale_1033>P2 Visible Lines</locale_1033>
+        <locale_2052>P2 可见线</locale_2052>
+      </button_text>
+      <menu_text>
+        <locale_1033>P2 Visible Lines</locale_1033>
+        <locale_2052>P2 可见线</locale_2052>
+      </menu_text>
+      <tooltip>
+        <locale_1033>P2 Visible Lines</locale_1033>
+        <locale_2052>P2 可见线</locale_2052>
+      </tooltip>
+      <script>! _P2VisibleLines</script>
+    </macro_item>
+    <macro_item guid="f6e45451-6374-4413-98e3-fc019c0027cb" bitmap_id="d15ebd3e-bab3-4e44-b733-f23d6e4a2c38">
+      <button_text>
+        <locale_1033>P2 Hidden Lines</locale_1033>
+        <locale_2052>P2 隐藏线</locale_2052>
+      </button_text>
+      <menu_text>
+        <locale_1033>P2 Hidden Lines</locale_1033>
+        <locale_2052>P2 隐藏线</locale_2052>
+      </menu_text>
+      <tooltip>
+        <locale_1033>P2 Hidden Lines</locale_1033>
+        <locale_2052>P2 隐藏线</locale_2052>
+      </tooltip>
+      <script>! _P2HiddenLines</script>
+    </macro_item>
+  </macros>
+  <icons>
+    <icon guid="37ecf442-effe-47fc-9fc0-c4b04af121f0">
+      <light>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+          <mask id="thumb-clearance" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+            <rect width="64" height="64" fill="white" />
+            <path d="M 34,22 C 39,19 43,13 44,8 C 44.5,5 47,3.5 49.5,5            C 53,7 52,13 51,17 H 57 C 60.5,17 62,19 61,22            L 58,32 C 57.5,35 55,37 52,37 H 43 C 39.5,37 36,35.5 34,34 Z" fill="black" stroke="black" stroke-width="7" stroke-linejoin="round" />
+          </mask>
+          <g mask="url(#thumb-clearance)">
+            <path d="M 22.47,16.35 V 40.47 L 6,54 M 22.47,40.47 L 46,48.71" fill="none" stroke="#1c1e22" stroke-width="2.5" stroke-dasharray="3 4" stroke-linecap="round" stroke-linejoin="round" opacity="0.52" />
+            <path d="M 6,28.12 L 22.47,16.35 L 46,24 V 48.71 L 29.53,61.06 L 6,54 Z            M 6,28.12 L 29.53,36.35 L 46,24 M 29.53,36.35 V 61.06" fill="none" stroke="#1c1e22" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
+          </g>
+          <path d="M 34,22 C 39,19 43,13 44,8 C 44.5,5 47,3.5 49.5,5            C 53,7 52,13 51,17 H 57 C 60.5,17 62,19 61,22            L 58,32 C 57.5,35 55,37 52,37 H 43 C 39.5,37 36,35.5 34,34 Z" fill="#1c1e22" stroke="#1c1e22" stroke-width="0" stroke-linejoin="round" />
+        </svg>
+      </light>
+      <dark>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+          <mask id="thumb-clearance" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+            <rect width="64" height="64" fill="white" />
+            <path d="M 34,22 C 39,19 43,13 44,8 C 44.5,5 47,3.5 49.5,5            C 53,7 52,13 51,17 H 57 C 60.5,17 62,19 61,22            L 58,32 C 57.5,35 55,37 52,37 H 43 C 39.5,37 36,35.5 34,34 Z" fill="black" stroke="black" stroke-width="7" stroke-linejoin="round" />
+          </mask>
+          <g mask="url(#thumb-clearance)">
+            <path d="M 22.47,16.35 V 40.47 L 6,54 M 22.47,40.47 L 46,48.71" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-dasharray="3 4" stroke-linecap="round" stroke-linejoin="round" opacity="0.52" />
+            <path d="M 6,28.12 L 22.47,16.35 L 46,24 V 48.71 L 29.53,61.06 L 6,54 Z            M 6,28.12 L 29.53,36.35 L 46,24 M 29.53,36.35 V 61.06" fill="none" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
+          </g>
+          <path d="M 34,22 C 39,19 43,13 44,8 C 44.5,5 47,3.5 49.5,5            C 53,7 52,13 51,17 H 57 C 60.5,17 62,19 61,22            L 58,32 C 57.5,35 55,37 52,37 H 43 C 39.5,37 36,35.5 34,34 Z" fill="#ffffff" stroke="#ffffff" stroke-width="0" stroke-linejoin="round" />
+        </svg>
+      </dark>
+    </icon>
+    <icon guid="d15ebd3e-bab3-4e44-b733-f23d6e4a2c38">
+      <light>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+          <mask id="thumb-clearance" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+            <rect width="64" height="64" fill="white" />
+            <path d="M 34,22 C 39,19 43,13 44,8 C 44.5,5 47,3.5 49.5,5            C 53,7 52,13 51,17 H 57 C 60.5,17 62,19 61,22            L 58,32 C 57.5,35 55,37 52,37 H 43 C 39.5,37 36,35.5 34,34 Z" fill="black" stroke="black" stroke-width="7" stroke-linejoin="round" />
+          </mask>
+          <g mask="url(#thumb-clearance)">
+            <path d="M 22.47,16.35 V 40.47 L 6,54 M 22.47,40.47 L 46,48.71" fill="none" stroke="#1c1e22" stroke-width="2.5" stroke-dasharray="3 4" stroke-linecap="round" stroke-linejoin="round" opacity="0.52" />
+            <path d="M 6,28.12 L 22.47,16.35 L 46,24 V 48.71 L 29.53,61.06 L 6,54 Z            M 6,28.12 L 29.53,36.35 L 46,24 M 29.53,36.35 V 61.06" fill="none" stroke="#1c1e22" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 4" />
+          </g>
+          <path d="M 34,22 C 39,19 43,13 44,8 C 44.5,5 47,3.5 49.5,5            C 53,7 52,13 51,17 H 57 C 60.5,17 62,19 61,22            L 58,32 C 57.5,35 55,37 52,37 H 43 C 39.5,37 36,35.5 34,34 Z" fill="#1c1e22" stroke="#1c1e22" stroke-width="0" stroke-linejoin="round" />
+        </svg>
+      </light>
+      <dark>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+          <mask id="thumb-clearance" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+            <rect width="64" height="64" fill="white" />
+            <path d="M 34,22 C 39,19 43,13 44,8 C 44.5,5 47,3.5 49.5,5            C 53,7 52,13 51,17 H 57 C 60.5,17 62,19 61,22            L 58,32 C 57.5,35 55,37 52,37 H 43 C 39.5,37 36,35.5 34,34 Z" fill="black" stroke="black" stroke-width="7" stroke-linejoin="round" />
+          </mask>
+          <g mask="url(#thumb-clearance)">
+            <path d="M 22.47,16.35 V 40.47 L 6,54 M 22.47,40.47 L 46,48.71" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-dasharray="3 4" stroke-linecap="round" stroke-linejoin="round" opacity="0.52" />
+            <path d="M 6,28.12 L 22.47,16.35 L 46,24 V 48.71 L 29.53,61.06 L 6,54 Z            M 6,28.12 L 29.53,36.35 L 46,24 M 29.53,36.35 V 61.06" fill="none" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 4" />
+          </g>
+          <path d="M 34,22 C 39,19 43,13 44,8 C 44.5,5 47,3.5 49.5,5            C 53,7 52,13 51,17 H 57 C 60.5,17 62,19 61,22            L 58,32 C 57.5,35 55,37 52,37 H 43 C 39.5,37 36,35.5 34,34 Z" fill="#ffffff" stroke="#ffffff" stroke-width="0" stroke-linejoin="round" />
+        </svg>
+      </dark>
+    </icon>
+  </icons>
+  <bitmaps />
+  <scripts />
+</RhinoUI>
