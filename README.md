@@ -1,71 +1,59 @@
-# Better Make2D
+# BetterMake2D 1.6.0
 
-![Better Make2D](assets/icon.png)
+Rhino 9 for Windows 插件，面向 .NET 10 运行时。V2 从选中的三维几何计算平面可见性，输出按 Rhino 原图层组织的闭合区和线稿。
 
-用于 Rhino 9 的视图投影出图插件，支持平行、透视和两点透视。把原模型投影为可编辑的二维曲线，适用于平面、立面和平行轴测。
+**v1.6.0 预发行版**提供 `BetterMake2D.rhp` 和 `bettermake2d-1.6.0-rh9_0-win.yak`。[下载安装包](https://github.com/KariyaWakana/BetterMake2D/releases/tag/v1.6.0)
 
-| 命令 | 输出 |
-| --- | --- |
-| `_BetterMake2D` | 剪影、截线及可见折边。可选生成闭合试填与边界。 |
-| `_BetterMake2DHidden` | 遮挡边，放在独立的浅灰虚线图层。可与可见线叠合。 |
+[使用指南](使用指南.md) · [V2 架构设计](v2混合架构设计.md)
 
-[English](#english) · [日本語](#日本語)
+## 使用
 
-## 安装
+1. 用 Rhino 的插件管理器加载下载的 `BetterMake2D.rhp`，或用 Rhino 9 自带的 `yak.exe` 安装 Yak 包。升级后重启 Rhino。
+2. 激活目标视口，运行 `_BetterMake2D` 打开中英文设置窗。可预选模型对象，也可直接选择当前视口可见对象。从“视图”切换其它视口或命名视图。出图范围为当前选择时，默认让其它可见对象参与遮挡。
+3. 在开始前确认画幅、截平面、线条和填色格式，指定插入位置或独立文件路径。默认输出实心 Hatch，亦可选择平面 Brep 或两者。三类文件可按需选用。SVG 与 AI 提供预计纸面尺寸和一键推荐比例，实际尺寸经过导出前复核。
+4. 后台非模态进度窗显示阶段、图块和用时，支持取消。完成后可缩放至结果或打开输出文件夹。文档写入使用一次 Undo 记录。输出按原图层镜像到 `ClosedRegions`、`VisibleLines`、`SectionCuts`、`HiddenLines`。
 
-Windows 用户先退出 Rhino 9，完整解压安装包后双击 `Install.cmd`，再启动 Rhino 9。安装脚本使用 Rhino 自带的 Yak 包管理器，将本地 `.yak` 安装到当前用户。也可在 `_PlugInManager` 里选择 `P2VisibleLines.rhp` 手动加载。
+设置窗跟随 Rhino 主题，保存上次使用的选项。插件内嵌后台求解启动程序与 AI 转换脚本，使用 Rhino 9 的 .NET 10 运行时。AI 导出需要本机 Illustrator。采集和写入快照、最终提交图面使用 Rhino 主线程，几何求解在另一个进程完成。
 
-安装程序会在当前用户的标准工具栏里找到原版 Make2D，在它后面添加点赞按钮。左键运行可见线，右键运行隐藏线。「出图」页同样只使用这一个按钮。立方体线条随 Rhino 主题切换深浅，黄色拇指在两种主题下保持一致。修改前会在同一目录备份现有 .rui 文件。
+`-_BetterMake2D` 通过命令行选择物件和放置位置。设置窗与命令行共用 V2 求解器。可用 `HiZ=Yes/No` 对照保守深度预筛。完整操作说明见 [使用指南](使用指南.md)。
 
-如果你从未启动过 Rhino 9，请先打开并退出一次，再运行安装脚本。没有原版 Make2D 按钮的自定义布局，可以在 Toolbar 中使用随插件加载的「Better Make2D」工具栏。
+V2 的求解精度默认是“精确（NURBS）”。“快速（精细网格，超大场景推荐）”用随工作视窗和文档容差调整的曲面网格计算轮廓、接触和深度。平面修剪和圆孔仍使用原始平面几何。快速模式会按代理内存预算调整曲面网格密度，曲面邻近的可见性和接触位置会随网格精度变化。命令宏使用 `Accuracy=Exact/Fast`，批处理使用 `RunElevation.ps1 -FastMesh`。
 
-项目针对 Rhino 9 的 .NET 10 运行时。以前手动安装过同名版本时，请在 Rhino 插件管理器确认使用 0.8.0；如有旧版本占用，先退出 Rhino，再运行安装程序。
 
-[Rhino 包安装说明](https://developer.rhino3d.com/guides/yak/installing-and-managing-packages/)
+## 批处理出图
 
-原命令 `_P2VisibleLines` 和 `_P2HiddenLines` 仍可用于已有宏。
-
-## 出图
-
-1. 在 Rhino 独立出图文件中打开已确认的工作视图。选中要出图的实体、曲面、挤出、块实例、网格和会遮挡它们的构件。截平面要作用于当前视口。
-2. 运行 `_BetterMake2D`，按提示选取和回车，在空处指定插入点。平行视图按原比例出线。透视图的大小以相机目标平面为基准。
-3. 运行 `_BetterMake2DHidden`。使用同一视图、同一组对象、同一 `SmoothTransitions` 设置和同一插入点。两套线都用可见投影包围盒的左下角配准。可在两个命令里键入同一个坐标，例如 `w220,0,0`。
-4. 在图层面板用名称前缀 `BetterMake2D-` 和 `BetterMake2DHidden-` 分别管理输出。虚线使用 Rhino 图层线型，可按纸面比例在 Rhino 或 Illustrator 里调节显示间距。
-
-每次运行的选项从默认值开始。两个命令都有 `SmoothTransitions`，默认关闭；打开可保留圆角等光滑过渡边。用于试填的选项在 `_BetterMake2D` 中。
-
-| 选项 | 默认 | 作用 |
-| --- | --- | --- |
-| `ClosedFill` | No | 生成临时 Hatch 与闭合边界，根据可见构件判断归属。 |
-| `RefineDetails` | No | 开启填色后，对首轮选取中的局部构件再次投影，补充原始边界。 |
-| `DetailContacts` | No | 开启填色和局部细化后，追加二次选取构件的实体交线作为试填输入。 |
-
-`ClosedFills` 是试填；默认关闭的 `FillBoundaries` 图层保留外轮廓及内孔边界。对照原模型检查漏线和重线，确认哪些区块可以独立选中后，再按纸面比例导入 Illustrator。复杂接头建议按局部细化，注意保留遮挡对象。
-
-## 试用
-
-打开 [QuickStart.3dm](examples/QuickStart.3dm)，在 Top 视图选中带圆孔的板和抬高的方块。用两个命令出线到同一插入点。方块遮住的板边应显示为虚线。开启 `ClosedFill` 的试填中，板上的圆孔保持空白。
-
-## 从源码构建
-
-使用 Windows Rhino 9 和运行在 .NET 10 上的 PowerShell 7，例如 PowerShell 7.6。将下方路径替换为本机的 Rhino 9 安装目录。
+从 Rhino 原档的已保存平行机位计算二维闭合区域和线稿。结果在 `06_立面`，保留原图层、原对象和原面编号。同目录保存求解分步耗时、未解记录和独立原档射线对照。求解和独立审计使用依次启动的 RhinoCore 进程，支持 `-Svg` 和 `-Ai` 出口。
 
 ```powershell
-pwsh -File "./src/Build.ps1" -RhinoSystem "D:\Program Files\Rhino 9\System"
-pwsh -File "./installer/BuildPackage.ps1" -RhinoSystem "D:\Program Files\Rhino 9\System"
+pwsh -File ./RunElevation.ps1 -InputModel './模型.3dm' -ViewName '主立面' -OutputDirectory './输出/v2正立面' -RhinoSystem 'D:/Program Files/Rhino 9/System' -Svg
 ```
 
-`src/build/P2VisibleLines.rhp` 是插件文件。`artifacts/` 中生成 Windows Yak 安装包和配套的 `Install.cmd`。构建会把不同尺寸的 ICO 嵌入插件，图标的可编辑源文件位于 `assets/icon.svg`。
+`-HiddenLines` 将虚线输出到 Rhino 的 `Hidden` 和 SVG / AI 的 `隐藏线` 图层树。`-HiddenBackFaces` 加入实体背面边，`-HiddenLayerPath '结构::桩基'` 只导出指定原图层及其子层的隐藏线。`-V2OverlapTiles` 允许当前 RhinoCore 后台预建下一块 Tile 的整数排列。精确模式先用原边、轮廓、解析平面交线和网格接触定标，再由可见前沿调度原生 BrepBrep。新交线只重排受影响的图块，归属与深度证明不足的面对由补查处理。
 
+从含外链块的原档出图时，V2 优先读取档内保存的源路径，再查相对路径及原档目录里的同名链接文件。链接变换和来源图层随几何传入。`-LinkedLayersOn` 与 `-LinkedLayersOff` 可在本次出图中覆盖外链档的原图层显示状态，原档的保存状态和链接配置保持原样。
 
-## English
+原档模式可用 `-ViewArchive` 从独立的 Rhino 档读取 `-ViewName` 指定的平行命名视图。`-ViewWindow 'left,bottom,right,top'` 使用以相机为原点的视图平面坐标，四个值与模型单位相同。`-NearClip` 和 `-FarClip` 是沿视向从相机起算的距离。`-DepthClipLayer` 将深度裁切限定于指定原图层及其子层，视平面窗口仍覆盖全场景。出图与独立射线审计沿用同一机位、裁切范围和外链图层设置。
 
-Better Make2D creates editable visible and hidden linework from parallel, perspective, and two-point perspective views in Rhino 9 for Windows. Close Rhino, extract the Windows ZIP, run `Install.cmd`, and restart Rhino. The thumbs-up button sits next to Rhino's Make2D button, including on the Drafting tab. Left-click runs `BetterMake2D` for visible lines. Right-click runs `BetterMake2DHidden` for hidden lines.
+通过 `-V2Baseline` 指定同原档、同机位的二维图面可以逐点比较。用 `-NoHiZ` 对照 Hi-Z 关闭时的结果和耗时。`-V2FixedAudit` 只审计全幅固定格点，用于快速检查。也可用 `-SavedFaceCheckpoint` 读取配对原面阶段档，配合 `-V2Focus '原对象ID/面编号'` 检查一张原面。批处理入口使用已保存的平行机位。更多实现细节见 [v2 混合架构设计](v2混合架构设计.md)。
 
-For aligned drawings, use the same view, objects, `SmoothTransitions` setting, and insertion point for both commands. Use `ClosedFill=Yes` with `BetterMake2D` to generate closed boundaries and temporary hatches. The old `P2VisibleLines` and `P2HiddenLines` command names still work in macros.
+已有二维图面时，可用 `-SavedDrawingDirectory` 指定包含 `主立面_二维图面.3dm` 的目录，仅执行 `-Svg` 或 `-Ai` 导出。`-PaperScale` 指定纸面比例分母，默认 1000。已有 SVG 也可单独运行 `ExportElevationAi.ps1 -SvgPath <文件> -OutputPath <文件>`。
 
-## 日本語
+## 1.6.0 验证结果
 
-Better Make2D は、Windows 版 Rhino 9 の平行投影、透視投影、二点透視のビューから、編集可能な可視線と隠線を作成します。Rhino を終了し、Windows 用 ZIP を展開して `Install.cmd` を実行します。再起動すると標準の Make2D ボタンの隣にボタンが表示されます。「製図」タブでも使えます。左クリックで可視線の `BetterMake2D`、右クリックで隠線の `BetterMake2DHidden` を実行します。
+正立面和 20 mm 广角透视的精确与快速模式均通过 Rhino 回读，0 开环、0 无效对象。广角两种模式在 3,560 条独立射线上与 v1.5.0 逐点一致。正立面精确模式在 226,251 个探点中有 12 处归属变化，且整图耗时高于 v1.5.0。
 
-両方の図を重ねるには、同じビュー、部材、`SmoothTransitions` の設定、挿入点を使用します。閉じた境界と確認用ハッチは、`BetterMake2D` で `ClosedFill=Yes` を選択すると作成できます。既存マクロの `P2VisibleLines` と `P2HiddenLines` も引き続き使用できます。
+## 构建与验证
+
+正式插件从 `src/` 构建。`-Verification` 构建另含 `tests/` 中的 V2 回归、批处理入口和检查点读取。
+
+使用运行在 .NET 10 上的 PowerShell 7（如 7.6）与 Rhino 9 的 System 目录。以下为发行版的优化构建方式，请按本机安装位置调整路径。
+
+```powershell
+pwsh -File ./Build.ps1 -Optimized -RhinoSystem 'D:\Program Files\Rhino 9\System'
+pwsh -File ./tests/VerifyPluginLoad.ps1 -RhinoSystem 'D:\Program Files\Rhino 9\System'
+pwsh -File ./tests/RunQuickV2Verification.ps1 -RhinoSystem 'D:\Program Files\Rhino 9\System' -CoreOnly -OutputFolder ./build/quick-verification
+```
+
+加载验证在独立 RhinoCore 进程调用 `PlugIn.LoadPlugIn` 加载 `build/BetterMake2D.rhp`，核对插件 ID、实际加载路径和 `_BetterMake2D` 命令归属。脚本将验证结果输出到终端。
+
+快速回归在单个 RhinoCore 内验证遮挡证明、0.05 mm 细缝、透视射线、活动截平面、镜像嵌套块、分层输出、取消回滚及惰性求交。用 `-CoreOnly` 可直接从公开仓库运行合成回归。若另有含 `Top`、`验证_侧转35度立面` 和 `验证_侧转35度俯视25度轴测` 的 Rhino 测试档，可去掉 `-CoreOnly` 并传入 `-BridgeModel <模型路径>`，运行三机位射线审计和二维回读。

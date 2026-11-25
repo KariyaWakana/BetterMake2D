@@ -1,3 +1,4 @@
 src/build/
 artifacts/
 *.3dmbak
+/build/

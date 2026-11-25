@@ -1,0 +1,9 @@
+name: bettermake2d
+version: 1.6.0
+authors:
+  - BetterMake2D
+description: Editable visible, hidden and section linework with closed regions from parallel and perspective Rhino views.
+keywords:
+  - drawing
+  - projection
+  - brep
