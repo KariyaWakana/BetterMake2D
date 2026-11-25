@@ -2,18 +2,20 @@
 
 Rhino 9 for Windows 插件，面向 .NET 10 运行时。V2 从选中的三维几何计算平面可见性，输出按 Rhino 原图层组织的闭合区和线稿。
 
-**v1.6.0 预发行版**提供 `BetterMake2D.rhp` 和 `bettermake2d-1.6.0-rh9_0-win.yak`。[下载安装包](https://github.com/KariyaWakana/BetterMake2D/releases/tag/v1.6.0)
+**v1.6.0 预发行版**的 Windows 安装 ZIP 会安装插件，并把点赞按钮放到 Rhino「出图」工具栏的原生 Make2D 右边。也可单独下载 RHP 或 Yak。[下载安装包](https://github.com/KariyaWakana/BetterMake2D/releases/tag/v1.6.0)
 
 [使用指南](使用指南.md) · [V2 架构设计](v2混合架构设计.md)
 
 ## 使用
 
-1. 用 Rhino 的插件管理器加载下载的 `BetterMake2D.rhp`，或用 Rhino 9 自带的 `yak.exe` 安装 Yak 包。升级后重启 Rhino。
-2. 激活目标视口，运行 `_BetterMake2D` 打开中英文设置窗。可预选模型对象，也可直接选择当前视口可见对象。从“视图”切换其它视口或命名视图。出图范围为当前选择时，默认让其它可见对象参与遮挡。
+1. 退出 Rhino 9，解压 Windows 安装 ZIP，运行其中的 `Install.cmd`。重新打开 Rhino 后切换到「出图」工具栏。
+2. 激活目标视口，左键单击原生 Make2D 右边的点赞按钮，或运行 `_BetterMake2D`。可预选模型对象，也可直接选择当前视口可见对象。从「视图」切换其他视口或命名视图。
 3. 在开始前确认画幅、截平面、线条和填色格式，指定插入位置或独立文件路径。默认输出实心 Hatch，亦可选择平面 Brep 或两者。三类文件可按需选用。SVG 与 AI 提供预计纸面尺寸和一键推荐比例，实际尺寸经过导出前复核。
 4. 后台非模态进度窗显示阶段、图块和用时，支持取消。完成后可缩放至结果或打开输出文件夹。文档写入使用一次 Undo 记录。输出按原图层镜像到 `ClosedRegions`、`VisibleLines`、`SectionCuts`、`HiddenLines`。
 
 设置窗跟随 Rhino 主题，保存上次使用的选项。插件内嵌后台求解启动程序与 AI 转换脚本，使用 Rhino 9 的 .NET 10 运行时。AI 导出需要本机 Illustrator。采集和写入快照、最终提交图面使用 Rhino 主线程，几何求解在另一个进程完成。
+
+点赞按钮只绑定左键。使用 Rhino 插件管理器停用插件后，如需从工具栏移除按钮，在 Rhino 关闭时运行 `Install.cmd -RemoveToolbar`。再次安装会恢复按钮。安装脚本会在原工具栏所在目录保存备份。
 
 `-_BetterMake2D` 通过命令行选择物件和放置位置。设置窗与命令行共用 V2 求解器。可用 `HiZ=Yes/No` 对照保守深度预筛。完整操作说明见 [使用指南](使用指南.md)。
 

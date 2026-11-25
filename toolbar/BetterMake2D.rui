@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RhinoUI major_ver="5" minor_ver="0" guid="c9b956f5-d3a0-465a-bc5d-034df2b73519" default_language_id="1033">
+  <extend_rhino_menus />
+  <menus />
+  <tool_bar_groups />
+  <tool_bars>
+    <tool_bar guid="acd7541b-a90f-48a8-8a44-2f157d3326ff" bitmap_id="37ecf442-effe-47fc-9fc0-c4b04af121f0">
+      <text>
+        <locale_1033>BetterMake2D</locale_1033>
+        <locale_2052>BetterMake2D</locale_2052>
+        <locale_1041>BetterMake2D</locale_1041>
+      </text>
+      <tool_bar_item guid="702664be-da37-4bc0-8306-18110b6b577a">
+        <text>
+          <locale_1033>BetterMake2D</locale_1033>
+          <locale_2052>BetterMake2D</locale_2052>
+          <locale_1041>BetterMake2D</locale_1041>
+        </text>
+        <left_macro_id>91d305d0-a18f-47b1-ad90-6a99c11e5398</left_macro_id>
+      </tool_bar_item>
+    </tool_bar>
+  </tool_bars>
+  <macros>
+    <macro_item guid="91d305d0-a18f-47b1-ad90-6a99c11e5398" bitmap_id="37ecf442-effe-47fc-9fc0-c4b04af121f0">
+      <button_text>
+        <locale_1033>BetterMake2D</locale_1033>
+        <locale_2052>BetterMake2D</locale_2052>
+        <locale_1041>BetterMake2D</locale_1041>
+      </button_text>
+      <menu_text>
+        <locale_1033>BetterMake2D</locale_1033>
+        <locale_2052>BetterMake2D</locale_2052>
+        <locale_1041>BetterMake2D</locale_1041>
+      </menu_text>
+      <tooltip>
+        <locale_1033>Generate a 2D drawing</locale_1033>
+        <locale_2052>生成二维图面</locale_2052>
+        <locale_1041>2D 図面を作成</locale_1041>
+      </tooltip>
+      <script>! _BetterMake2D</script>
+    </macro_item>
+  </macros>
+  <icons>
+    <icon guid="37ecf442-effe-47fc-9fc0-c4b04af121f0">
+      <light>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+          <path d="M 22.66,6.99 V 35.00 L 3.99,49.17 M 22.66,35 L 49.33,43.50" fill="none" stroke="#212529" stroke-width="2.65" stroke-opacity="0.298" />
+          <path d="M 3.99,20.84 L 22.41,6.67 L 49.33,15.17 V 43.51 L 30.91,57.68 L 3.99,49.17 Z&#xA;           M 3.99,20.84 L 30.66,29.67 L 49.33,15.17 M 30.66,29.67 V 57.68" fill="none" stroke="#212529" stroke-width="2.65" stroke-linejoin="miter" />
+          <path d="M 37.6,14.9 C 41.4,12.1 44.2,7.7 45,3.8 C 45.6,1.2 47.6,0.9 49.3,2.3&#xA;           C 51.3,3.8 51.2,7.4 50.1,10.3 H 57.7 C 60.7,10.3 62.3,12.3 61.6,14.9&#xA;           L 59.1,23.1 C 58.5,25.7 56.6,26.7 54.1,26.7 H 45.1 C 41.6,26.7 39.1,25.5 37.6,23.7 Z" fill="#ffad46" stroke="#212529" stroke-width="2.65" stroke-linejoin="round" />
+        </svg>
+      </light>
+      <dark>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+          <path d="M 22.66,6.99 V 35.00 L 3.99,49.17 M 22.66,35 L 49.33,43.50" fill="none" stroke="#f8f9fa" stroke-width="2.65" stroke-opacity="0.298" />
+          <path d="M 3.99,20.84 L 22.41,6.67 L 49.33,15.17 V 43.51 L 30.91,57.68 L 3.99,49.17 Z&#xA;           M 3.99,20.84 L 30.66,29.67 L 49.33,15.17 M 30.66,29.67 V 57.68" fill="none" stroke="#f8f9fa" stroke-width="2.65" stroke-linejoin="miter" />
+          <path d="M 37.6,14.9 C 41.4,12.1 44.2,7.7 45,3.8 C 45.6,1.2 47.6,0.9 49.3,2.3&#xA;           C 51.3,3.8 51.2,7.4 50.1,10.3 H 57.7 C 60.7,10.3 62.3,12.3 61.6,14.9&#xA;           L 59.1,23.1 C 58.5,25.7 56.6,26.7 54.1,26.7 H 45.1 C 41.6,26.7 39.1,25.5 37.6,23.7 Z" fill="#ffad46" stroke="#f8f9fa" stroke-width="2.65" stroke-linejoin="round" />
+        </svg>
+      </dark>
+    </icon>
+  </icons>
+  <bitmaps />
+  <scripts />
+</RhinoUI>
