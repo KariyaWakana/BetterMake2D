@@ -9,7 +9,7 @@ namespace BetterMake2D;
 
 internal sealed class V2BoundaryCollector(V2Face[] faces, V2Drawing drawing, IProjectionCamera camera,
     V2ClipPlanes clips, double tolerance, double imageTolerance, double chordTolerance, double angle,
-    Action cancel, Func<string, long, TimeSpan> measure)
+    Action cancel, Func<string, long, TimeSpan> measure, bool detachOriginals = false)
 {
     private int nextCurve;
 
@@ -18,7 +18,7 @@ internal sealed class V2BoundaryCollector(V2Face[] faces, V2Drawing drawing, IPr
     internal IEnumerable<V2Segment> Read(int i, V2ProjectedCurves originals,
         Dictionary<(string Source, int Edge), int> edgeIds, Dictionary<int, Line> meshRims,
         V2HiddenSources hiddenSources, V2TangentEdges tangencies, Action<int, Curve> rememberSilhouette,
-        Action<int, BrepEdge> rememberTrim = null)
+        Action<int, BrepEdge> rememberTrim = null, Action<string> sample = null)
     {
         var face = faces[i];
         var segments = new List<V2Segment>();
@@ -58,7 +58,11 @@ internal sealed class V2BoundaryCollector(V2Face[] faces, V2Drawing drawing, IPr
                 segments.Add(new V2Segment(a, b, new V2SourceSpan(id, i, kind, 0, 1)));
             }
         }
-        var trims = new List<(BrepEdge Edge, int Curve)>();
+        // Exact bounds and closest-point tests populate native acceleration
+        // data. Keep it on owned curves that expire with this face, instead of
+        // on the borrowed topology of the archive's long-lived Breps.
+        using var detached = detachOriginals ? new CurveScope() : null;
+        var trims = new List<(Curve Edge, int Curve)>();
         var readEdges = new HashSet<int>();
         foreach (var loop in face.Face.Loops)
             foreach (var trim in loop.Trims)
@@ -68,8 +72,9 @@ internal sealed class V2BoundaryCollector(V2Face[] faces, V2Drawing drawing, IPr
                     if (!edgeIds.TryGetValue(key, out int id)) edgeIds.Add(key, id = NextId());
                     int before = segments.Count;
                     long start = Stopwatch.GetTimestamp();
-                    segments.AddRange(Discretize(edge, i, "Original", originals, id,
-                        trim.TrimType == BrepTrimType.Seam ? null : hiddenSources, tangencies));
+                    var model = detached?.Copy(edge) ?? edge;
+                    segments.AddRange(Discretize(model, i, "Original", originals, id,
+                        trim.TrimType == BrepTrimType.Seam ? null : hiddenSources, tangencies, edge));
                     if (camera.Perspective && rememberTrim != null)
                     {
                         int recorded = -1;
@@ -82,14 +87,16 @@ internal sealed class V2BoundaryCollector(V2Face[] faces, V2Drawing drawing, IPr
                         }
                     }
                     measure("original edge discretization", start);
-                    if (segments.Count > before) trims.Add((edge, id));
+                    if (segments.Count > before) trims.Add((model, id));
                 }
+        sample?.Invoke("boundary: original trims");
         if (!face.Plane.HasValue && !face.Mesh)
             foreach (var curve in V2Silhouettes.Read(face.Face, camera, tolerance * .05, Math.Min(angle, .001), start =>
             {
                 drawing.SilhouetteCalls++;
                 measure("Rhino silhouette", start);
-            }))
+                sample?.Invoke("boundary: silhouette compute");
+            }, detachOriginals))
             {
                 using (curve)
                 {
@@ -105,6 +112,7 @@ internal sealed class V2BoundaryCollector(V2Face[] faces, V2Drawing drawing, IPr
                     segments.AddRange(contour);
                 }
             }
+        sample?.Invoke("boundary: silhouette and weld");
         var sections = clips.Crossing(face.Box).ToArray();
         if (sections.Length > 0)
         {
@@ -119,6 +127,7 @@ internal sealed class V2BoundaryCollector(V2Face[] faces, V2Drawing drawing, IPr
                             originals, NextId(), hiddenSources));
             }
         }
+        sample?.Invoke("boundary: sections");
         return segments;
 
         void Attach(Point3d end, Point2d projected, V2SourceSpan source)
@@ -168,21 +177,38 @@ internal sealed class V2BoundaryCollector(V2Face[] faces, V2Drawing drawing, IPr
     }
 
     internal IEnumerable<V2Segment> Discretize(Curve model, int face, string kind, V2ProjectedCurves originals, int id,
-        V2HiddenSources hiddenSources = null, V2TangentEdges tangencies = null)
+        V2HiddenSources hiddenSources = null, V2TangentEdges tangencies = null, BrepEdge topology = null)
     {
         foreach (var piece in clips.Pieces(model, tolerance * .02))
             if (ReferenceEquals(piece, model))
             {
-                if (model is BrepEdge edge) tangencies?.Remember(id, edge);
+                if (topology != null) tangencies?.Remember(id, topology);
                 foreach (var segment in ProjectPiece(model, face, kind, originals, id, hiddenSources)) yield return segment;
             }
             else
                 using (piece)
                 {
                     int pieceId = NextId();
-                    if (model is BrepEdge edge) tangencies?.Remember(pieceId, edge);
+                    if (topology != null) tangencies?.Remember(pieceId, topology);
                     foreach (var segment in ProjectPiece(piece, face, kind, originals, pieceId, hiddenSources)) yield return segment;
                 }
+    }
+
+    private sealed class CurveScope : IDisposable
+    {
+        private readonly List<Curve> curves = new();
+
+        internal Curve Copy(BrepEdge edge)
+        {
+            var curve = edge.DuplicateCurve();
+            if (curve != null) curves.Add(curve);
+            return curve;
+        }
+
+        public void Dispose()
+        {
+            foreach (var curve in curves) curve.Dispose();
+        }
     }
 
     private IEnumerable<V2Segment> ProjectPiece(Curve model, int face, string kind, V2ProjectedCurves originals, int id,

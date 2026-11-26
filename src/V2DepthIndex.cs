@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -29,6 +30,7 @@ internal sealed class V2DepthIndex : IDisposable
     private readonly List<(int Face, double Depth)> contenders = new(4);
     private readonly List<(int Face, double Depth, double Area)> coplanar = new(4);
     private readonly double?[] projectedAreas;
+    private readonly ConcurrentDictionary<(int, int), bool> sameSupports;
     private readonly PlanarFootprint[] footprints;
     private readonly bool[] footprintRead;
     private readonly Comparison<int> nearFirst;
@@ -36,6 +38,7 @@ internal sealed class V2DepthIndex : IDisposable
     private readonly ShapeCopies copies;
     private readonly IReadOnlySet<SourceFaceId> excluded;
     private readonly double searchMargin;
+    private bool disposed;
     // These coordinates come from MeshVertexList as floats. Mesh hits only seed exact queries.
     private const int TriangleBudget = 3_000_000;
     private readonly record struct Triangle(int Face, Point3f A, Point3f B, Point3f C)
@@ -64,6 +67,7 @@ internal sealed class V2DepthIndex : IDisposable
         excluded = hiddenOnly;
         searchMargin = imageTolerance ?? fit;
         projectedAreas = new double?[faces.Length];
+        sameSupports = new();
         footprints = new PlanarFootprint[faces.Length];
         footprintRead = new bool[faces.Length];
         nearFirst = (a, b) =>
@@ -74,6 +78,7 @@ internal sealed class V2DepthIndex : IDisposable
         collect = (_, hit) => candidates.Add(hit.Id);
         int triangleBudget = faces.Sum(face => (long)(face.Triangles?.TriangleCount ?? 0)) > 1_000_000
             ? 750_000 : TriangleBudget;
+        if (faces.Length > 70000) triangleBudget = Math.Min(triangleBudget, 1_000_000);
         if (camera.Perspective) triangleBudget = Math.Min(triangleBudget, 500_000);
         Span<Point3d> polygon = stackalloc Point3d[V2ClipPlanes.ViewPolygonCapacity];
         for (int i = 0; i < faces.Length; i++)
@@ -162,6 +167,7 @@ internal sealed class V2DepthIndex : IDisposable
         triangles = original.triangles;
         root = original.root;
         projectedAreas = new double?[faces.Length];
+        sameSupports = original.sameSupports;
         footprints = new PlanarFootprint[faces.Length];
         footprintRead = new bool[faces.Length];
         nearFirst = original.nearFirst;
@@ -194,14 +200,16 @@ internal sealed class V2DepthIndex : IDisposable
     {
         var entry = faces[index];
         if (entry.Triangles is V2NativeMesh mesh) return mesh.Depth(point, camera);
+        var face = Face(index);
+        if (face == null) return double.NegativeInfinity;
         if (entry.Plane is Plane plane && OnPlane(plane, point) is Point3d location)
         {
-            return camera.Includes(location) && entry.Face.ClosestPoint(location, out double u, out double v) &&
-                entry.Face.IsPointOnFace(u, v, fit * .01) != PointFaceRelation.Exterior
+            return camera.Includes(location) && face.ClosestPoint(location, out double u, out double v) &&
+                face.IsPointOnFace(u, v, fit * .01) != PointFaceRelation.Exterior
                 ? location.Z : double.NegativeInfinity;
         }
         using var query = new LineCurve(camera.ViewRay(point));
-        Intersection.CurveBrepFace(query, entry.Face, fit * .02, out var overlaps, out var points);
+        Intersection.CurveBrepFace(query, face, fit * .02, out var overlaps, out var points);
         foreach (var overlap in overlaps ?? Array.Empty<Curve>()) overlap.Dispose();
         double depth = double.NegativeInfinity;
         foreach (var hit in points ?? Array.Empty<Point3d>())
@@ -507,27 +515,23 @@ internal sealed class V2DepthIndex : IDisposable
         // ties require coincidence over the common projection, not a crossing.
         double scale = Math.Max(1, Math.Max(Math.Abs(front), Math.Max(Math.Abs(point.X), Math.Abs(point.Y))));
         double coincidence = Math.Max(fit * 1e-5, 128 * 2.220446049250313e-16 * scale);
-        double tangentDepth = Math.Max(coincidence, fit * .1);
         coplanar.Clear();
         double smallest = double.PositiveInfinity;
         Vector3d? normal = null;
         foreach (var hit in contenders)
         {
-            if (hit.Face == nearest.Face || faces[hit.Face].Plane is not Plane other)
-                continue;
-            double gap = front - hit.Depth;
-            if (frontPlane is Plane plane)
+            if (hit.Face == nearest.Face || front - hit.Depth > coincidence) continue;
+            if (frontPlane is Plane plane && faces[hit.Face].Plane is Plane other)
             {
-                if (gap > coincidence || !Coincident(nearest.Face, plane, hit.Face, other, point, gap, coincidence))
+                if (!Coincident(nearest.Face, plane, hit.Face, other, point, front - hit.Depth, coincidence))
                     continue;
             }
             else
             {
-                // A flat detail can be flush to a curved support to within native
-                // depth precision. Require compatible tangent planes as well.
-                if (gap > tangentDepth) continue;
-                normal ??= SurfaceNormal(nearest.Face, point, front);
-                if (!normal.Value.IsValid || Math.Abs(normal.Value * other.Normal) < .99995) continue;
+                if (!SameSurfaceSupport(nearest.Face, hit.Face)) continue;
+                normal ??= SurfaceNormal(nearest.Face, camera.AtDepth(point, front), coincidence, false);
+                var otherNormal = SurfaceNormal(hit.Face, camera.AtDepth(point, hit.Depth), coincidence, false);
+                if (!NormalsAgree(normal.Value, otherNormal)) continue;
             }
             double area = ProjectedArea(hit.Face);
             if (!double.IsFinite(area)) continue;
@@ -537,32 +541,93 @@ internal sealed class V2DepthIndex : IDisposable
         if (coplanar.Count == 0) return nearest.Face;
         double frontArea = ProjectedArea(nearest.Face);
         if (!double.IsFinite(frontArea)) return nearest.Face;
-        if (frontPlane.HasValue)
-        {
-            coplanar.Add((nearest.Face, nearest.Depth, frontArea));
-            smallest = Math.Min(smallest, frontArea);
-        }
+        coplanar.Add((nearest.Face, nearest.Depth, frontArea));
+        smallest = Math.Min(smallest, frontArea);
         double areaTie = Math.Max(smallest * 1e-9, fit * fit * 1e-4);
-        if (!frontPlane.HasValue && smallest + areaTie >= frontArea) return nearest.Face;
         int owner = -1;
         double ownerDepth = double.NegativeInfinity;
         foreach (var hit in coplanar)
             if (hit.Area - smallest <= areaTie &&
-                (hit.Depth > ownerDepth || hit.Depth == ownerDepth && CompareSource(hit.Face, owner) < 0))
+                (owner < 0 || hit.Depth > ownerDepth + coincidence ||
+                    Math.Abs(hit.Depth - ownerDepth) <= coincidence && CompareSource(hit.Face, owner) < 0))
                 (owner, ownerDepth) = (hit.Face, hit.Depth);
         return owner;
     }
 
-    private Vector3d SurfaceNormal(int index, Point2d point, double depth)
+    private Vector3d SurfaceNormal(int index, Point3d hit, double tolerance, bool interior)
     {
         var face = Face(index);
-        if (face == null) return Vector3d.Unset;
-        var hit = camera.AtDepth(point, depth);
-        if (!face.ClosestPoint(hit, out double u, out double v) ||
-            face.PointAt(u, v).DistanceTo(hit) > fit * .02)
+        if (face == null || !face.ClosestPoint(hit, out double u, out double v) ||
+            face.PointAt(u, v).DistanceTo(hit) > tolerance ||
+            interior && face.IsPointOnFace(u, v, tolerance) != PointFaceRelation.Interior)
             return Vector3d.Unset;
         var normal = face.NormalAt(u, v);
         return normal.Unitize() ? normal : Vector3d.Unset;
+    }
+
+    private static bool NormalsAgree(Vector3d a, Vector3d b) =>
+        a.IsValid && b.IsValid && Math.Abs(a * b) >= .99995;
+
+    internal bool SameSurfaceSupport(int first, int second)
+    {
+        if (first > second) (first, second) = (second, first);
+        var key = (first, second);
+        if (sameSupports.TryGetValue(key, out bool same)) return same;
+        // Each worker uses its own Rhino geometry copies. Publish the result once
+        // and keep the accepting and rejecting cases for the whole solve.
+        lock (sameSupports)
+        {
+            if (!sameSupports.TryGetValue(key, out same))
+                sameSupports[key] = same = ProveSupport(first, second);
+        }
+        return same;
+    }
+
+    private bool ProveSupport(int a, int b)
+    {
+        var first = faces[a];
+        var second = faces[b];
+        var overlap = first.Screen.Intersection(second.Screen);
+        if (!overlap.HasArea || first.Face == null || second.Face == null ||
+            first.Triangles != null || second.Triangles != null)
+            return false;
+
+        var bounds = first.Box;
+        bounds.Union(second.Box);
+        double scale = Math.Max(1, Math.Max(bounds.Min.DistanceTo(Point3d.Origin), bounds.Max.DistanceTo(Point3d.Origin)));
+        double tolerance = Math.Max(fit * 1e-5, 128 * 2.220446049250313e-16 * scale);
+        using var surfaceA = Face(a).UnderlyingSurface();
+        using var surfaceB = Face(b).UnderlyingSurface();
+        if (GeometryBase.GeometryEquals(surfaceA, surfaceB) ||
+            V2AnalyticSupport.Same(surfaceA, surfaceB, bounds.Diagonal.Length, tolerance))
+            return true;
+
+        // Probe both trimmed faces over an area. A grazing line or an isolated
+        // crossing cannot certify support, and any conflicting witness vetoes it.
+        Span<Point2d> witnesses = stackalloc Point2d[15];
+        int count = 0;
+        for (int row = 1; row <= 3; row++)
+        for (int column = 1; column <= 5; column++)
+        {
+            double x = column / 6.0, y = row / 4.0;
+            var point = new Point2d(overlap.Left + (overlap.Right - overlap.Left) * x,
+                overlap.Bottom + (overlap.Top - overlap.Bottom) * y);
+            double depthA = DepthAt(a, point), depthB = DepthAt(b, point);
+            if (!double.IsFinite(depthA) || !double.IsFinite(depthB)) continue;
+            if (Math.Abs(depthA - depthB) > tolerance) return false;
+            var hit = camera.AtDepth(point, depthA);
+            if (!NormalsAgree(SurfaceNormal(a, hit, tolerance, true), SurfaceNormal(b, hit, tolerance, true)))
+                return false;
+            witnesses[count++] = new Point2d(x, y);
+        }
+        for (int i = 2; i < count; i++)
+        for (int j = 1; j < i; j++)
+        {
+            var u = witnesses[j] - witnesses[0];
+            var v = witnesses[i] - witnesses[0];
+            if (Math.Abs(u.X * v.Y - u.Y * v.X) >= .025) return true;
+        }
+        return false;
     }
 
     private bool Coincident(int first, Plane a, int second, Plane b, Point2d point, double gap, double tolerance)
@@ -580,7 +645,7 @@ internal sealed class V2DepthIndex : IDisposable
             gap + Math.Max(left, right) + Math.Max(bottom, top) <= tolerance;
     }
 
-    private double ProjectedArea(int index)
+    internal double ProjectedArea(int index)
     {
         if (projectedAreas[index] is double cached) return cached;
         var entry = faces[index];
@@ -615,7 +680,21 @@ internal sealed class V2DepthIndex : IDisposable
         }
         double projection = !camera.Perspective && entry.Plane is Plane plane
             ? area * Math.Abs(plane.Normal.Z) : area / Math.Max(1, windingBound);
-        projectedAreas[index] = projection > 0 ? projection : double.PositiveInfinity;
+        if (!double.IsFinite(projection) || projection <= 0)
+        {
+            // The projection of a periodic rim may cancel its own winding.
+            // Use the upper bound of its footprint and, for orthographic
+            // views, the trimmed area as a second upper bound.
+            projection = entry.Screen.Area;
+            if (!camera.Perspective)
+            {
+                using var trimmed = face.DuplicateFace(false);
+                using var properties = trimmed == null ? null : AreaMassProperties.Compute(trimmed, true, false, false, false);
+                if (properties is { Area: > 0 } && double.IsFinite(properties.Area))
+                    projection = Math.Min(projection, properties.Area + Math.Abs(properties.AreaError));
+            }
+        }
+        projectedAreas[index] = projection > 0 && double.IsFinite(projection) ? projection : double.PositiveInfinity;
         return projectedAreas[index].Value;
     }
 
@@ -641,6 +720,8 @@ internal sealed class V2DepthIndex : IDisposable
 
     public void Dispose()
     {
+        if (disposed) return;
+        disposed = true;
         originals.Dispose();
         copies?.Dispose();
     }

@@ -13,6 +13,8 @@ namespace BetterMake2D;
 internal static class V2DrawingOutput
 {
     internal const string HiddenLinetypeName = "BetterMake2D Hidden";
+    internal static bool LargeDrawing(V2Drawing drawing) =>
+        (long)drawing.Regions.Count + drawing.Curves.Count >= 50000 || drawing.ProxyTriangles >= 1_000_000;
 
     internal static Linetype HiddenDefinition()
     {
@@ -36,6 +38,7 @@ internal static class V2DrawingOutput
         try
         {
             int count = WriteModel(drawing, pending, units, tolerance, styles, releaseDrawing);
+            if (releaseDrawing) CollectArchiveStorage();
             using (var saved = File3dm.Read(pending) ?? throw new IOException(pending))
                 if (saved.Settings.ModelUnitSystem != units || saved.Objects.Count != count)
                     throw new IOException("The v2 2D drawing did not reopen with its original units and objects.");
@@ -87,8 +90,10 @@ internal static class V2DrawingOutput
         {
             drawing.Regions.Clear();
             drawing.Curves.Clear();
+            CollectArchiveStorage();
         }
-        if (model.Objects.Count == 0 || !model.Write(file, 8))
+        var options = new File3dmWriteOptions { Version = 8, SaveRenderMeshes = false, SaveAnalysisMeshes = false };
+        if (model.Objects.Count == 0 || !model.Write(file, options))
             throw new IOException($"Could not save the 2D drawing {file}.");
         return model.Objects.Count;
 
@@ -119,5 +124,11 @@ internal static class V2DrawingOutput
             layerIds.Add(path, added);
             return added;
         }
+    }
+
+    private static void CollectArchiveStorage()
+    {
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
     }
 }

@@ -28,7 +28,7 @@ public static class VerifyV2LazyContact
             LineAt(piercing, 7);
             LineAt(piercing, 9);
             if (piercing.LazyInitialOwners != 1 || piercing.LazyContactPasses.Count != 1 ||
-                piercing.LazyContactPasses[0].Native != 1 || piercing.LazyContactPasses[0].Completion)
+                piercing.LazyContactPasses[0].Native != 1)
                 throw new InvalidOperationException("The piercing must be exposed by the first native frontier batch.");
         }
 
@@ -45,8 +45,7 @@ public static class VerifyV2LazyContact
             OwnerAt(triple, 10, "w");
             LineAt(triple, 8.375);
             if (triple.LazyInitialOwners != 1 || triple.LazyContactPasses.Count != 2 ||
-                triple.LazyContactPasses[0].Native != 2 || triple.LazyContactPasses[1].Native != 1 ||
-                triple.LazyContactPasses.Any(pass => pass.Completion))
+                triple.LazyContactPasses[0].Native != 2 || triple.LazyContactPasses[1].Native != 1)
                 throw new InvalidOperationException("The curved pair must be exposed by the second native frontier batch.");
         }
 
@@ -58,10 +57,76 @@ public static class VerifyV2LazyContact
             OwnerAt(tiled, 8.5, "v");
             LineAt(tiled, 8.375);
             if (tiled.Tiles.Count < 8 || !tiled.LazyContactPasses.Any(pass =>
-                pass.RebuiltTiles > 0 && pass.RebuiltTiles < pass.Tiles))
+                pass.RebuiltTiles > 0 && pass.RebuiltTiles < pass.Tiles) ||
+                tiled.LazyDirtyCells == 0 || tiled.LazyFrozenCells == 0)
                 throw new InvalidOperationException("A contact confined to part of the frame must reuse unaffected tiles.");
         }
-        return "PASS lazy native contact: an interior piercing, a curved pair exposed in round two, and reuse of unaffected tiles.";
+        CheckDirtyPatch();
+        return "PASS lazy native contact: two-round piercing, bounded dirty patches, frozen holes, replaced spans and clipped tile seams.";
+    }
+
+    private static void CheckDirtyPatch()
+    {
+        var segments = new System.Collections.Generic.List<V2Segment>();
+        const double grid = 1;
+        var window = new V2TileWindow(0, 0, 120, 100);
+        int id = 0;
+        segments.Add(Segment(0, 0, 120, 0, V2TiledArrangement.SeamKind));
+        segments.Add(Segment(120, 0, 120, 100, V2TiledArrangement.SeamKind));
+        segments.Add(Segment(120, 100, 0, 100, V2TiledArrangement.SeamKind));
+        segments.Add(Segment(0, 100, 0, 0, V2TiledArrangement.SeamKind));
+        segments.Add(Segment(40, 0, 40, 100));
+        segments.Add(Segment(80, 0, 80, 100));
+        segments.Add(Segment(10, 10, 20, 10));
+        segments.Add(Segment(20, 10, 20, 20));
+        segments.Add(Segment(20, 20, 10, 20));
+        segments.Add(Segment(10, 20, 10, 10));
+        segments.Add(Segment(12, 30, 18, 30));
+
+        var plan = V2PlanarArrangement.Build(segments, grid, null);
+        foreach (var cell in plan.Cells) cell.Owner = 77;
+        using var store = new V2TileTopology();
+        plan = store.Load(store.Save(plan), grid);
+        var contact = Segment(0, 50, 40, 50, "Contact");
+        var first = plan.Repair(window, new[] {new V2TileSegmentEdit(null, contact)}, p => Classify(p, 50), null);
+        if (first.FrozenCells != 2 || Owner(first.Plan, 15, 15) != 77 || Owner(first.Plan, 100, 10) != 77 ||
+            Owner(first.Plan, 10, 45) != 1 || Owner(first.Plan, 10, 55) != 2)
+            throw new InvalidOperationException("A contact edit disturbed a frozen cell or failed to split its dirty cell.");
+
+        var moved = contact with {A = new Point2d(0, 60), B = new Point2d(40, 60)};
+        var second = first.Plan.Repair(window, new[] {new V2TileSegmentEdit(contact, moved)}, p => Classify(p, 60), null);
+        if (Owner(second.Plan, 10, 55) != 1 || Owner(second.Plan, 10, 65) != 2 ||
+            Owner(second.Plan, 15, 15) != 77 || Owner(second.Plan, 100, 10) != 77 ||
+            Enumerable.Range(0, second.Plan.EdgeCount).Any(i => second.Plan.Start(i * 2).Y == 50 &&
+                second.Plan.Start(i * 2 + 1).Y == 50 && second.Plan.Sources(i * 2).Contains(contact.Source)))
+            throw new InvalidOperationException("A moved source left its obsolete contact in the saved topology.");
+
+        var third = second.Plan.Repair(window, new[]
+        {
+            new V2TileSegmentEdit(null, Segment(18, 30, 15, 37, "Contact")),
+            new V2TileSegmentEdit(null, Segment(15, 37, 12, 30, "Contact"))
+        }, local =>
+        {
+            Classify(local, 60);
+            local.Cells.Single(cell => local.Contains(cell, new Point2d(15, 32))).Owner = 4;
+        }, null);
+        if (Owner(third.Plan, 15, 32) != 4 || Owner(third.Plan, 15, 15) != 77)
+            throw new InvalidOperationException("The local edit failed to close an existing dangling source.");
+
+        void Classify(V2PlanarArrangement local, double y)
+        {
+            foreach (var cell in local.Cells)
+            {
+                if (!local.TryInterior(cell, out var interior) || interior.X > 80 ||
+                    interior.X > 10 && interior.X < 20 && interior.Y > 10 && interior.Y < 20)
+                    throw new InvalidOperationException("A frozen cell was sent back for depth classification.");
+                cell.Owner = interior.X > 40 ? 3 : interior.Y < y ? 1 : 2;
+            }
+        }
+        V2Segment Segment(double ax, double ay, double bx, double by, string kind = "Original") =>
+            new(new Point2d(ax, ay), new Point2d(bx, by), new V2SourceSpan(id++, 0, kind, 0, 1));
+        static int Owner(V2PlanarArrangement drawing, double x, double y) =>
+            drawing.Cells.Single(cell => drawing.Contains(cell, new Point2d(x, y))).Owner;
     }
 
     // A quadratic Bézier section evaluates to z = 1 - (x - center)^2.

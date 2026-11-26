@@ -1,6 +1,7 @@
 param(
     [string]$RhinoSystem = (Join-Path $env:ProgramFiles 'Rhino 9/System'),
     [switch]$Verification,
+    [switch]$UiHost,
     [switch]$Optimized,
     [string]$OutputPath = (Join-Path $PSScriptRoot 'build/BetterMake2D.rhp')
 )
@@ -18,7 +19,10 @@ $runtime = [AppContext]::GetData('TRUSTED_PLATFORM_ASSEMBLIES') -split [IO.Path]
 foreach ($file in @($runtime) + @('netcore/RhinoCommon.dll', 'netcore/Rhino.UI.dll', 'Eto.dll' | ForEach-Object { Join-Path $system $_ })) {
     $references.Add([Microsoft.CodeAnalysis.MetadataReference]::CreateFromFile($file))
 }
-$sources = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'src') -Filter '*.cs' -File)
+if ($UiHost -and $Verification) { throw 'Choose either -UiHost or -Verification.' }
+if ($UiHost -and !$PSBoundParameters.ContainsKey('OutputPath')) { $OutputPath = Join-Path $PSScriptRoot 'build/BetterMake2D.UI.rhp' }
+$sourceFolder = if ($UiHost) { 'toolbar' } else { 'src' }
+$sources = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot $sourceFolder) -Filter '*.cs' -File)
 if ($Verification) { $sources += Get-ChildItem -Path (Join-Path $PSScriptRoot 'tests/*.cs') -File }
 $trees = [Microsoft.CodeAnalysis.SyntaxTree[]]@($sources | Sort-Object Name | ForEach-Object {
     [Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree]::ParseText(
@@ -29,13 +33,19 @@ $options = [Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions]::new(
 if ($Optimized) {
     $options = $options.WithOptimizationLevel([Microsoft.CodeAnalysis.OptimizationLevel]::Release)
 }
-$assembly = [Microsoft.CodeAnalysis.CSharp.CSharpCompilation]::Create($(if ($Verification) { "BetterMake2D.Verify" } else { "BetterMake2D" }), $trees, $references, $options)
+$assemblyName = if ($UiHost) { 'BetterMake2D.UI' } elseif ($Verification) { 'BetterMake2D.Verify' } else { 'BetterMake2D' }
+$assembly = [Microsoft.CodeAnalysis.CSharp.CSharpCompilation]::Create($assemblyName, $trees, $references, $options)
 $bytes = [IO.MemoryStream]::new()
 $resources = $null
 $worker = [IO.MemoryStream]::new()
 try {
     $embedded = [Collections.Generic.List[Microsoft.CodeAnalysis.ResourceDescription]]::new()
-    if (!$Verification) {
+    if ($UiHost) {
+        $resources = $assembly.CreateDefaultWin32Resources($true, $true, $null, $null)
+        $toolbarPath = Join-Path $PSScriptRoot 'toolbar/BetterMake2D.rui'
+        $toolbarStream = { [IO.File]::OpenRead($toolbarPath) }.GetNewClosure()
+        $embedded.Add([Microsoft.CodeAnalysis.ResourceDescription]::new('BetterMake2D.Toolbar.rui', $toolbarStream, $false))
+    } elseif (!$Verification) {
         $resources = $assembly.CreateDefaultWin32Resources($true, $true, $null, $null)
         $workerSource = Join-Path $PSScriptRoot 'worker/Program.cs'
         $workerTree = [Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree]::ParseText(

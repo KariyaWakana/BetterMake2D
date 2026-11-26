@@ -2,7 +2,15 @@
 <RhinoUI major_ver="5" minor_ver="0" guid="c9b956f5-d3a0-465a-bc5d-034df2b73519" default_language_id="1033">
   <extend_rhino_menus />
   <menus />
-  <tool_bar_groups />
+  <tool_bar_groups>
+    <tool_bar_group guid="ea44a232-c2c0-42e1-8161-5d1197540070" dock_bar_guid64="27ac6e1f-76ea-4fba-8b88-018ef691d960" active_tool_bar_group="acd7541b-a90f-48a8-8a44-2f157d3326ff" single_file="True" hide_single_tab="True" point_floating="215,200">
+      <text><locale_1033>BetterMake2D</locale_1033></text>
+      <tool_bar_group_item guid="29f16871-2a0a-47ca-a9aa-521131500806" major_version="1" minor_version="1">
+        <text><locale_1033>BetterMake2D</locale_1033></text>
+        <tool_bar_id>acd7541b-a90f-48a8-8a44-2f157d3326ff</tool_bar_id>
+      </tool_bar_group_item>
+    </tool_bar_group>
+  </tool_bar_groups>
   <tool_bars>
     <tool_bar guid="acd7541b-a90f-48a8-8a44-2f157d3326ff" bitmap_id="37ecf442-effe-47fc-9fc0-c4b04af121f0">
       <text>

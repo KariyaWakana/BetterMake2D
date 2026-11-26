@@ -8,10 +8,10 @@ namespace BetterMake2D;
 
 internal readonly record struct V2ContactPair(int First, int Second);
 
-internal readonly record struct V2LazyContactPass(int Round, bool Completion, int Candidates, int Native,
+internal readonly record struct V2LazyContactPass(int Round, int Candidates, int Native,
     int Empty, int Points, int CurveHits, double NativeSeconds, int RebuiltTiles, int Tiles, double WallSeconds)
 {
-    public override string ToString() => $"Lazy contact round {Round}{(Completion ? " (completion)" : "")}: " +
+    public override string ToString() => $"Lazy contact round {Round}: " +
         $"{Candidates} candidates, {Native} BrepBrep ({Empty} empty, {Points} point-only, {CurveHits} curve hits), " +
         $"{NativeSeconds:F2} s native, {RebuiltTiles}/{Tiles} tiles rearranged, {WallSeconds:F2} s wall.";
 }
@@ -87,10 +87,9 @@ internal sealed class V2ContactFront
 }
 
 internal sealed class V2LazyContact(V2Face[] faces, IProjectionCamera camera, V2SurfaceBounds bounds,
-    V2HiZ hiZ, V2Drawing drawing, double tolerance, Action cancel, Action<string> progress) : IDisposable
+    V2Drawing drawing, double tolerance, Action cancel, Action<string> progress) : IDisposable
 {
     private readonly List<V2ContactPair> unresolved = new();
-    private V2ContactCover cover;
     private bool recordedInitial;
     private readonly V2PlanarDepth?[] near = new V2PlanarDepth?[faces.Length];
     private readonly V2PlanarDepth?[] far = new V2PlanarDepth?[faces.Length];
@@ -98,20 +97,18 @@ internal sealed class V2LazyContact(V2Face[] faces, IProjectionCamera camera, V2
 
     public void Dispose()
     {
-        cover?.Dispose();
-        cover = null;
         unresolved.Clear();
         unresolved.TrimExcess();
     }
 
     internal bool HasPending => unresolved.Count != 0;
+    internal int PendingCount => unresolved.Count;
     internal void Defer(int first, int second) => unresolved.Add(new V2ContactPair(first, second));
 
-    internal List<V2ContactPair> Select(V2ContactFront front, bool completion)
+    internal List<V2ContactPair> Select(V2ContactFront front)
     {
         long began = Stopwatch.GetTimestamp();
-        int retained = 0, neighbors = 0, outside = 0, behind = 0, hidden = 0, separated = 0;
-        long coarseTicks = 0;
+        int retained = 0, neighbors = 0, outside = 0, behind = 0;
         var chosen = new List<V2ContactPair>();
         for (int k = 0; k < unresolved.Count; k++)
         {
@@ -122,40 +119,15 @@ internal sealed class V2LazyContact(V2Face[] faces, IProjectionCamera camera, V2
             bool seenA = front.TryGet(pair.First, out var left);
             bool seenB = front.TryGet(pair.Second, out var right);
             if (seenA || seenB) neighbors++;
-            if (!completion && !seenA && !seenB)
+            if (!seenA && !seenB)
             {
                 unresolved[retained++] = pair;
                 continue;
-            }
-            if (completion)
-            {
-                long started = Stopwatch.GetTimestamp();
-                bool clear = bounds.SeparatedOrCovered(pair.First, pair.Second, faces, tolerance, hiZ, out bool covered);
-                coarseTicks += Stopwatch.GetTimestamp() - started;
-                if (clear)
-                {
-                    if (covered) hidden++;
-                    else separated++;
-                    continue;
-                }
             }
             var common = BoundingBox.Intersection(a.Box, b.Box);
             double pad = tolerance + Math.Max(1, Math.Max(common.Min.MaximumCoordinate, common.Max.MaximumCoordinate)) * 1e-13;
             common.Inflate(pad);
             var overlap = camera.Bounds(common);
-            if (completion)
-            {
-                // A probe supplies a scheduling witness only. Without a proven
-                // opaque cover, evaluate the unresolved pair even if both owners
-                // are absent from the chordal arrangement.
-                if (overlap.HasArea && Covered(overlap, pair, common.Max.Z, pad, 2))
-                {
-                    hidden++;
-                    continue;
-                }
-                chosen.Add(pair);
-                continue;
-            }
             bool touches = false;
             if (seenA && Demands(left, pair.First, pair.Second) ||
                 seenB && Demands(right, pair.Second, pair.First))
@@ -180,40 +152,17 @@ internal sealed class V2LazyContact(V2Face[] faces, IProjectionCamera camera, V2
             }
         }
         unresolved.RemoveRange(retained, unresolved.Count - retained);
-        drawing.LazyCompletionCovered += hidden;
-        drawing.BoundContactPrunes += separated;
-        if (coarseTicks > 0)
-        {
-            const string name = "contact surface hull separation";
-            drawing.Timing[name] = drawing.Timing.GetValueOrDefault(name) + Stopwatch.GetElapsedTime(0, coarseTicks);
-        }
-        if (!completion && !recordedInitial)
+        if (!recordedInitial)
         {
             drawing.LazyInitialNeighbors += neighbors;
             recordedInitial = true;
         }
         drawing.LazyDeferred2D += outside;
         drawing.LazyDeferredDepth += behind;
-        progress?.Invoke($"Lazy contact {(completion ? "completion" : "front")}: {neighbors} owner neighbors, " +
-            $"{outside} local 2D misses and {behind} local depth separations deferred; {separated} coarse hull separations, {hidden} certified hidden, " +
+        progress?.Invoke($"Lazy contact front: {neighbors} owner neighbors, " +
+            $"{outside} local 2D misses and {behind} local depth separations deferred; " +
             $"{chosen.Count} selected, {retained} still pending in {Stopwatch.GetElapsedTime(began).TotalSeconds:F2} s.");
         return chosen;
-    }
-
-    private bool Covered(Rect window, V2ContactPair pair, double boxUpper, double pad, int levels)
-    {
-        if (hiZ?.Available != true) return false;
-        var upper = Math.Min(boxUpper, Math.Min(Depth(pair.First, window).Upper, Depth(pair.Second, window).Upper));
-        if (hiZ.Hides(window, upper, pad)) return true;
-        if (levels == 2 && (cover ??= new V2ContactCover(faces, camera, tolerance)).Hides(window, upper, pad))
-            return true;
-        // Subdivision sharpens an upper bound for tilted planes. Refining an
-        // entirely curved pair here would traverse the same patch hulls again.
-        if (levels == 0 || !(faces[pair.First].Plane.HasValue || faces[pair.Second].Plane.HasValue))
-            return false;
-        foreach (var quarter in window.Quarters())
-            if (!Covered(quarter, pair, upper, pad, levels - 1)) return false;
-        return true;
     }
 
     private (double Lower, double Upper) Depth(int id, Rect window)

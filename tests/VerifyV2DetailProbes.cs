@@ -90,7 +90,8 @@ public static class VerifyV2DetailProbes
         var inspect = Environment.GetEnvironmentVariable("BMA2D_V2_DETAIL_FACES")?.Split(',');
         foreach (var entry in faces.Where(face => inspect?.Contains(Label(face.Id)) == true))
         {
-            result.Add($"Face {Label(entry.Id)} {entry.Face.UnderlyingSurface().GetType().Name}; {entry.Box}.");
+            double projectedArea = index.ProjectedArea(faces.IndexOf(entry));
+            result.Add($"Face {Label(entry.Id)} {entry.Face.UnderlyingSurface().GetType().Name}; {entry.Box}; effective projected area {projectedArea:R}.");
             foreach (var loop in entry.Face.Loops)
             {
                 using var rim = loop.To3dCurve();

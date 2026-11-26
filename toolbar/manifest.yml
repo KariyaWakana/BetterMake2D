@@ -1,0 +1,8 @@
+name: bettermake2d-ui
+version: 1.6.0
+authors:
+  - BetterMake2D
+description: Toolbar and Drafting menu integration for the separately installed BetterMake2D drawing plug-in.
+keywords:
+  - drawing
+  - toolbar

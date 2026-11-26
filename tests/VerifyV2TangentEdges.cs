@@ -89,6 +89,27 @@ public static class VerifyV2TangentEdges
             Require(HasStroke(off, probe, null) != tangent, label + ": wrong stroke with TangentEdges=No");
             Require(off.TangentChainsFiltered == on.TangentChains && (on.TangentChains > 0) == tangent &&
                 off.Curves.All(edge => edge.Boundary != "Tangent"), label + ": unexpected tangent count");
+            if (minimumTileDepth == 0 || accuracy != V2Accuracy.Exact) return;
+            var owned = inputs.Select(input => new Input(input.Brep.DuplicateBrep(), input.Source)).ToArray();
+            bool released = false;
+            try
+            {
+                using var detached = V2DrawingSolver.Solve(owned, fit, angle, minimumTileDepth: minimumTileDepth,
+                    tangentEdges: true, accuracy: accuracy, spillDuringBoundaryCollection: true, releaseInputs: Release);
+                Require(released && detached.TangentChains == on.TangentChains && HasStroke(detached, probe, "Tangent") &&
+                    detached.Regions.Count == on.Regions.Count &&
+                    detached.Regions.Zip(on.Regions).All(pair =>
+                        GeometryBase.GeometryEquals(pair.First.Brep, pair.Second.Brep)),
+                    "Releasing the input Brep changed a shared tangent edge or its closed regions.");
+            }
+            finally { Release(); }
+
+            void Release()
+            {
+                if (released) return;
+                foreach (var input in owned) input.Dispose();
+                released = true;
+            }
         }
 
         bool HasStroke(V2Drawing drawing, Point3d p, string kind) => drawing.Curves.Any(edge =>

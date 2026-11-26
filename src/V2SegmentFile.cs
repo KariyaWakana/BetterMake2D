@@ -13,11 +13,11 @@ namespace BetterMake2D;
 // compete with the local DCEL. Each reading thread caches one sequential page.
 internal sealed class V2SegmentFile : IReadOnlyList<V2Segment>, IDisposable
 {
-    private const int PageSize = 4096;
-    private static readonly int RecordSize = Unsafe.SizeOf<Row>();
+    internal const int PageSize = 4096;
+    internal static readonly int RecordSize = Unsafe.SizeOf<Row>();
 
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
-    private readonly record struct Row(double Ax, double Ay, double Bx, double By, double From, double To,
+    internal readonly record struct Row(double Ax, double Ay, double Bx, double By, double From, double To,
         int Curve, int Face, int Kind);
 
     private sealed class Page
@@ -31,7 +31,7 @@ internal sealed class V2SegmentFile : IReadOnlyList<V2Segment>, IDisposable
     private readonly ThreadLocal<Page> pages = new(() => new Page());
     public int Count { get; }
 
-    private V2SegmentFile(FileStream file, int count, string[] kinds)
+    internal V2SegmentFile(FileStream file, int count, string[] kinds)
     {
         this.file = file;
         this.kinds = kinds;
@@ -40,9 +40,7 @@ internal sealed class V2SegmentFile : IReadOnlyList<V2Segment>, IDisposable
 
     internal static V2SegmentFile Write(IReadOnlyList<V2Segment> segments, Action cancel)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"BetterMake2D-{Guid.NewGuid():N}.segments");
-        var stream = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 1,
-            FileOptions.DeleteOnClose | FileOptions.RandomAccess);
+        var stream = Create();
         try
         {
             var codes = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -76,6 +74,13 @@ internal sealed class V2SegmentFile : IReadOnlyList<V2Segment>, IDisposable
             stream.Dispose();
             throw;
         }
+    }
+
+    internal static FileStream Create()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"BetterMake2D-{Guid.NewGuid():N}.segments");
+        return new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 1,
+            FileOptions.DeleteOnClose | FileOptions.RandomAccess);
     }
 
     public V2Segment this[int index]

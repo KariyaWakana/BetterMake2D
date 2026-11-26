@@ -19,7 +19,7 @@ $env:BMA2D_V2_SECTION_TEST_OUTPUT = Join-Path $destination 'sections'
 $env:BMA2D_V2_TANGENT_TEST_OUTPUT = Join-Path $destination 'tangent'
 $env:BMA2D_DESKTOP_TEST = Join-Path $destination 'desktop'
 $suite = @('VerifyV2HiZ','VerifyV2ClipPlanes','VerifyV2Perspective','VerifyV2WidePerspective','VerifyV2PlanarContact','VerifyV2SegmentStorage','VerifyV2CommandOutput','VerifyV2NestedOutput',
-    'VerifyV2Drawing','VerifyV2PinchedFill','VerifyV2Terrain','VerifyV2HiddenLines','VerifyV2LineFinish','VerifyV2TangentEdges',
+    'VerifyV2Drawing','VerifyV2SameSupport','VerifyV2Backfaces','VerifyV2PinchedFill','VerifyV2Terrain','VerifyV2HiddenLines','VerifyV2LineFinish','VerifyV2TangentEdges',
     'VerifyDesktopDrawing','VerifyPaperSizing','VerifyV2MeshSnapshot','VerifyV2FastMesh','VerifyV2TileFirst','VerifyV2LazyContact')
 if (!$CoreOnly) {
     $env:BMA2D_V2_BRIDGE_MODEL = (Resolve-Path -LiteralPath $BridgeModel).Path

@@ -361,13 +361,15 @@ public static class VerifyV2Drawing
         {
             var common = chains.Single(chain => chain.Left >= 0 && chain.Right >= 0);
             common.Restore(new Dictionary<int, Curve>(), .01, _ => true);
-            Require(common.Sides.Length == 3 && common.Upgraded && common.Geometry is LineCurve &&
-                Math.Abs(common.Geometry.GetLength() - 12) < 1e-9, "The shared chain did not collapse to one line");
+            using var restored = common.DuplicateGeometry();
+            Require(common.Sides.Length == 3 && common.Upgraded && restored is LineCurve &&
+                Math.Abs(restored.GetLength() - 12) < 1e-9, "The shared chain did not collapse to one line");
             foreach (int side in common.Sides)
                 Require(chainBySide[side] == -chainBySide[side ^ 1] && chainBySide[side] > 0,
                     "A Twin does not reference the same geometry in reverse");
             common.Revert();
-            Require(common.Geometry is PolylineCurve, "The shared chain did not restore its common fallback");
+            using var fallback = common.DuplicateGeometry();
+            Require(fallback is PolylineCurve, "The shared chain did not restore its common fallback");
         }
         finally { foreach (var chain in chains) chain.Dispose(); }
 
@@ -519,7 +521,8 @@ public static class VerifyV2DrawingArchive
                 GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
                 GC.WaitForPendingFinalizers();
             }
-            V2DrawingOutput.Write(prepared.Drawing, drawingFile, prepared.Units, prepared.Fit, prepared.Styles);
+            V2DrawingOutput.Write(prepared.Drawing, drawingFile, prepared.Units, prepared.Fit, prepared.Styles,
+                releaseDrawing: V2DrawingOutput.LargeDrawing(prepared.Drawing));
             string line = FormattableString.Invariant($"save and reopen\t{Stopwatch.GetElapsedTime(save).TotalSeconds:F6}");
             File.AppendAllLines(Path.Combine(folder, "v2分步耗时.tsv"), new[] { line });
         }
@@ -722,8 +725,7 @@ public static class VerifyV2DrawingArchive
                 Environment.NewLine + $"Largest arrangement: {drawing.LargestClusterFaces} faces, {drawing.LargestClusterSegments} " +
                 $"segments and {drawing.LargestClusterCells} cells (per-metric maxima)." +
                 Environment.NewLine + drawing.TileSummary +
-                (drawing.LazyCandidates == 0 ? "" : Environment.NewLine + drawing.LazyContactSummary +
-                    Environment.NewLine + string.Join(Environment.NewLine, drawing.LazyContactPasses)) +
+                Environment.NewLine + $"BackfaceCulled: {drawing.BackfaceCulled}/{drawing.InputFaces + drawing.BackfaceCulled} original faces." +
                 Environment.NewLine + $"Conservative Hi-Z: {drawing.HiZFaces} faces, {drawing.HiZPixels} certified pixels, " +
                 $"{drawing.HiZOccluders} occluders including {drawing.HiZCurvedOccluders} curved faces." +
                 Environment.NewLine + $"Face inventory: {drawing.RegisteredFaces} registered, {drawing.SupportFaces} support, " +

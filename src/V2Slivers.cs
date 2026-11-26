@@ -9,21 +9,67 @@ namespace BetterMake2D;
 internal static class V2Slivers
 {
     internal static (V2PlanarArrangement Plan, int Absorbed, int Flattened) Clean(
-        V2PlanarArrangement plan, double tolerance, double millimetersPerUnit, Action cancel)
+        V2PlanarArrangement plan, double tolerance, double millimetersPerUnit, Action cancel,
+        Action<string> progress = null, int rebuildTileLimit = 80000)
     {
         double clearance = Math.Min(Math.Max(plan.Grid * 2.5, tolerance * .04), .005 / millimetersPerUnit);
+        progress?.Invoke("Post-stitch cleanup: absorbing sub-tolerance bands.");
+        Compact(plan.EdgeCount, rebuildTileLimit);
         int absorbed = Absorb(plan, clearance / plan.Grid, cancel, out var owners);
         if (absorbed > 0)
+        {
+            Compact(plan.EdgeCount, rebuildTileLimit);
             plan = V2PlanarArrangement.FromBoundary(plan.VisibleEdges(owners), plan.Grid);
+        }
         int flattened = 0;
         int steps = (int)Math.Min(2, Math.Floor(clearance / plan.Grid));
         if (steps > 0)
         {
-            plan = Flatten(plan, true, steps, cancel, ref flattened);
-            plan = Flatten(plan, false, steps, cancel, ref flattened);
-            plan = CollapseSplices(plan, steps, cancel, ref flattened);
+            Compact(plan.EdgeCount, rebuildTileLimit);
+            Rewrite("horizontal steps", Flatten(plan, true, steps, cancel));
+            Compact(plan.EdgeCount, rebuildTileLimit);
+            Rewrite("vertical steps", Flatten(plan, false, steps, cancel));
+            Compact(plan.EdgeCount, rebuildTileLimit);
+            Rewrite("short splices", CollapseSplices(plan, steps, cancel));
         }
         return (plan, absorbed, flattened);
+
+        void Rewrite(string label, Dictionary<Key, Key> moves)
+        {
+            if (moves == null || moves.Count == 0) return;
+            long changed = 0;
+            var original = plan;
+            try
+            {
+                Compact(original.EdgeCount, rebuildTileLimit);
+                progress?.Invoke($"Post-stitch cleanup: rewriting {label} at {moves.Count} vertices.");
+                plan = Reclassify(original, Revised(), tolerance, rebuildTileLimit, cancel, progress);
+                flattened += checked((int)changed);
+            }
+            catch (InvalidOperationException)
+            {
+                // A rewrite is atomic. Keep the original closed boundary if
+                // the proposed vertex moves cannot be arranged consistently.
+                progress?.Invoke($"Post-stitch cleanup: {label} kept its original boundary.");
+            }
+
+            IEnumerable<V2OwnedEdge> Revised()
+            {
+                foreach (var edge in original.EnumerateVisibleEdges())
+                {
+                    var a = moves.GetValueOrDefault(edge.A, edge.A);
+                    var b = moves.GetValueOrDefault(edge.B, edge.B);
+                    if (a == b) { changed++; continue; }
+                    yield return edge with { A = a, B = b };
+                }
+            }
+        }
+    }
+
+    private static void Compact(int edges, int limit)
+    {
+        if (edges > limit * 3L)
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
     }
 
     private static int Absorb(V2PlanarArrangement plan, double clearance, Action cancel, out int[] owners)
@@ -94,11 +140,11 @@ internal static class V2Slivers
         return changed;
     }
 
-    private static V2PlanarArrangement Flatten(V2PlanarArrangement plan, bool horizontal, int limit,
-        Action cancel, ref int flattened)
+    private static Dictionary<Key, Key> Flatten(V2PlanarArrangement plan, bool horizontal, int limit, Action cancel)
     {
         var edges = plan.VisibleEdges();
-        var incident = new Dictionary<Key, List<int>>();
+        var incident = new Dictionary<Key, int>(edges.Count);
+        var fan = new int[edges.Count * 2];
         int[] roots = new int[edges.Count];
         long[] low = new long[edges.Count], high = new long[edges.Count];
         long[] start = new long[edges.Count], end = new long[edges.Count];
@@ -111,16 +157,20 @@ internal static class V2Slivers
             high[i] = Math.Max(Row(e.A), Row(e.B));
             start[i] = Math.Min(Along(e.A), Along(e.B));
             end[i] = Math.Max(Along(e.A), Along(e.B));
-            if (!incident.TryGetValue(e.A, out var a)) incident.Add(e.A, a = new List<int>(2));
-            if (!incident.TryGetValue(e.B, out var b)) incident.Add(e.B, b = new List<int>(2));
-            a.Add(i);
-            b.Add(i);
+            incident.TryAdd(e.A, -1);
+            incident.TryAdd(e.B, -1);
+        }
+        for (int i = edges.Count - 1; i >= 0; i--)
+        {
+            Add(edges[i].A, i * 2);
+            Add(edges[i].B, i * 2 + 1);
         }
         foreach (var entry in incident.Values)
         {
             int first = -1;
-            foreach (int id in entry)
+            for (int link = entry; link >= 0; link = fan[link])
             {
+                int id = link / 2;
                 if (!IsRail(id)) continue;
                 if (first < 0) first = id;
                 else Unite(first, id);
@@ -132,9 +182,10 @@ internal static class V2Slivers
             var e = edges[i];
             long gap = high[i] - low[i];
             if (gap == 0 || gap > limit || Along(e.A) != Along(e.B)) continue;
-            foreach (int a in incident[e.A])
-                foreach (int b in incident[e.B])
+            for (int left = incident[e.A]; left >= 0; left = fan[left])
+                for (int right = incident[e.B]; right >= 0; right = fan[right])
                 {
+                    int a = left / 2, b = right / 2;
                     if (!IsRail(a) || !IsRail(b)) continue;
                     long da = Extent(a, e.A), db = Extent(b, e.B);
                     if (Math.Sign(da) == Math.Sign(db) ||
@@ -147,11 +198,15 @@ internal static class V2Slivers
                     if (Unite(a, b)) { connected.Add(a); connected.Add(b); }
                 }
         }
-        if (connected.Count == 0) return plan;
+        if (connected.Count == 0) return null;
         var activeRoots = connected.Select(Root).ToHashSet();
         var groups = Enumerable.Range(0, edges.Count).Where(IsRail)
             .Where(id => activeRoots.Contains(Root(id))).GroupBy(Root).ToArray();
-        var rows = incident.Keys.GroupBy(Row).ToDictionary(group => group.Key, group => group.ToArray());
+        var neededRows = new HashSet<long>();
+        foreach (int id in activeRoots)
+            for (long row = low[id]; row <= high[id]; row++) neededRows.Add(row);
+        var rows = incident.Keys.Where(vertex => neededRows.Contains(Row(vertex)))
+            .GroupBy(Row).ToDictionary(group => group.Key, group => group.ToArray());
         var positions = new Dictionary<Key, Key>();
         foreach (var group in groups)
         {
@@ -168,24 +223,15 @@ internal static class V2Slivers
                         positions.TryAdd(v, horizontal ? new Key(v.X, row) : new Key(row, v.Y));
             }
         }
-        var revised = edges.Select(Applied).Where(edge => edge.A != edge.B).ToList();
-        int count = edges.Count - revised.Count;
-        if (count == 0) return plan;
-        // An endpoint moved onto a rail must become a shared T vertex. The
-        // arrangement also consolidates coincident intervals after the band collapses.
-        try
-        {
-            var result = Reclassify(plan, V2PlanarArrangement.RebuildBoundary(revised, plan.Grid, cancel), cancel);
-            flattened += count;
-            return result;
-        }
-        catch (InvalidOperationException)
-        {
-            return plan;
-        }
+        if (!edges.Any(edge => positions.GetValueOrDefault(edge.A, edge.A) ==
+            positions.GetValueOrDefault(edge.B, edge.B))) return null;
+        return positions;
 
-        V2OwnedEdge Applied(V2OwnedEdge edge) => edge with { A = Move(edge.A), B = Move(edge.B) };
-        Key Move(Key point) => positions.GetValueOrDefault(point, point);
+        void Add(Key point, int side)
+        {
+            fan[side] = incident.GetValueOrDefault(point, -1);
+            incident[point] = side;
+        }
         long Along(Key p) => horizontal ? p.X : p.Y;
         long Row(Key p) => horizontal ? p.Y : p.X;
         bool IsRail(int i) => Row(edges[i].A) == Row(edges[i].B);
@@ -215,7 +261,7 @@ internal static class V2Slivers
 
     private static Vector2d Direction(Key a, Key b) => new(b.X - a.X, b.Y - a.Y);
 
-    private static V2PlanarArrangement CollapseSplices(V2PlanarArrangement plan, int limit, Action cancel, ref int count)
+    private static Dictionary<Key, Key> CollapseSplices(V2PlanarArrangement plan, int limit, Action cancel)
     {
         var edges = plan.VisibleEdges();
         var incident = new Dictionary<Key, (int Count, int First, int Second)>();
@@ -250,22 +296,7 @@ internal static class V2Slivers
             fixedVertices.Add(edge.A);
             fixedVertices.Add(edge.B);
         }
-        if (moves.Count == 0) return plan;
-        var revised = edges.Select(edge => edge with
-        {
-            A = moves.GetValueOrDefault(edge.A, edge.A),
-            B = moves.GetValueOrDefault(edge.B, edge.B)
-        }).Where(edge => edge.A != edge.B).ToList();
-        try
-        {
-            var result = Reclassify(plan, V2PlanarArrangement.RebuildBoundary(revised, plan.Grid, cancel), cancel);
-            count += edges.Count - revised.Count;
-            return result;
-        }
-        catch (InvalidOperationException)
-        {
-            return plan;
-        }
+        return moves;
 
         void Add(Key point, int id)
         {
@@ -276,24 +307,53 @@ internal static class V2Slivers
             forward ? (edge.Left, edge.Right) : (edge.Right, edge.Left);
     }
 
-    private static V2PlanarArrangement Reclassify(V2PlanarArrangement original, V2PlanarArrangement rebuilt, Action cancel)
+    private static V2PlanarArrangement Reclassify(V2PlanarArrangement original, IEnumerable<V2OwnedEdge> revised,
+        double tolerance, int tileLimit, Action cancel, Action<string> progress)
     {
         var previous = original.Regions().ToArray();
         using var index = new RTree();
         for (int i = 0; i < previous.Length; i++) index.Insert(original.RegionBounds(previous[i].Region), i);
-        foreach (var cell in rebuilt.Cells)
+
+        if (original.EdgeCount <= tileLimit * 3L)
         {
-            cancel?.Invoke();
-            if (!rebuilt.TryInterior(cell, out var point)) continue;
-            var p = new Point3d(point.X, point.Y, 0);
-            index.Search(new BoundingBox(p, p), (_, hit) =>
-            {
-                var old = previous[hit.Id];
-                if (!original.Contains(old.Region, point)) return;
-                cell.Owner = old.Owner;
-                hit.Cancel = true;
-            });
+            var rebuilt = V2PlanarArrangement.RebuildBoundary(revised.ToArray(), original.Grid, cancel);
+            Classify(rebuilt);
+            return V2PlanarArrangement.FromBoundary(rebuilt.VisibleEdges(), original.Grid);
         }
-        return V2PlanarArrangement.FromBoundary(rebuilt.VisibleEdges(), original.Grid);
+
+        // The geometry already has exact global integer coordinates. Stream
+        // every source span, then node the moved boundaries in bounded tiles
+        // and reconcile their owners using the pre-rewrite region topology.
+        using var buffer = new V2SegmentBuffer(fileBacked: true);
+        foreach (var edge in revised)
+        {
+            if ((buffer.Count & 8191) == 0) cancel?.Invoke();
+            var a = original.Point(edge.A);
+            var b = original.Point(edge.B);
+            foreach (var source in edge.Sources)
+                buffer.Add(new V2Segment(new Point2d(a.X, a.Y), new Point2d(b.X, b.Y), source));
+        }
+        using var file = buffer.Seal();
+        Compact(original.EdgeCount, tileLimit);
+        return V2TiledArrangement.Build(file, original.Grid, tolerance, tileLimit, 0, Classify, cancel,
+            line => progress?.Invoke($"Cleanup {line}"), new List<V2TileReport>(),
+            manageMemory: true, splitOnConvergence: true);
+
+        void Classify(V2PlanarArrangement rebuilt)
+        {
+            foreach (var cell in rebuilt.Cells)
+            {
+                cancel?.Invoke();
+                if (!rebuilt.TryInterior(cell, out var point)) continue;
+                var p = new Point3d(point.X, point.Y, 0);
+                index.Search(new BoundingBox(p, p), (_, hit) =>
+                {
+                    var old = previous[hit.Id];
+                    if (!original.Contains(old.Region, point)) return;
+                    cell.Owner = old.Owner;
+                    hit.Cancel = true;
+                });
+            }
+        }
     }
 }

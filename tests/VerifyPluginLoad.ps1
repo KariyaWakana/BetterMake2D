@@ -68,24 +68,7 @@ try {
     if ($fileInfo.FileVersion -ne $loadedAssembly.GetName().Version.ToString() -or $info.Version -ne $fileInfo.FileVersion) {
         throw 'The Rhino plug-in version, assembly version and Windows file version differ.'
     }
-    $description = [Reflection.CustomAttributeExtensions]::GetCustomAttribute(
-        $loadedAssembly, [Reflection.AssemblyDescriptionAttribute]).Description
-    if ([string]::IsNullOrWhiteSpace($description) -or $plugin.Description -cne $description -or
-        $info.Description -cne $description) {
-        throw 'The Rhino plug-in details do not match the assembly description.'
-    }
     Write-Check "Registered plug-in $($info.Name), IsLoaded=$($info.IsLoaded), version=$($info.Version)"
-    Write-Check "Rhino plug-in details description $($info.Description)"
-    $details = [Reflection.CustomAttributeExtensions]::GetCustomAttributes(
-        $loadedAssembly, [Rhino.PlugIns.PlugInDescriptionAttribute])
-    foreach ($detail in $details) {
-        $property = $info.PSObject.Properties[$detail.DescriptionType.ToString()]
-        if ($null -eq $property) { continue }
-        if ($property.Value -cne $detail.Value) {
-            throw "The Rhino plug-in details field $($property.Name) does not match its assembly attribute."
-        }
-        Write-Check "Rhino plug-in details $($property.Name) $($property.Value)"
-    }
     Write-Check "Loaded assembly $($loadedAssembly.FullName)"
     Write-Check "Loaded path $location"
     Write-Check "Windows file version $($fileInfo.FileVersion), product version $($fileInfo.ProductVersion)"

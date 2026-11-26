@@ -32,34 +32,44 @@ internal sealed class V2ProjectedCurves : Dictionary<int, Curve>, IDisposable
     }
 }
 
-internal sealed class V2EdgeChain(int left, int right, int[] sides, V2SourceSpan[] spans, Point3d[] points) : IDisposable
+internal sealed class V2EdgeChain(int left, int right, V2PlanarArrangement plan, int[] sides, int offset,
+    int count, V2SourceSpan source) : IDisposable
 {
     internal readonly int Left = left, Right = right;
-    internal readonly int[] Sides = sides;
-    internal V2SourceSpan Source => spans[0];
+    internal ReadOnlySpan<int> Sides => sides.AsSpan(offset, count);
+    internal V2SourceSpan Source => source;
     private Curve restored;
-    private Curve polyline;
     internal bool Upgraded => restored != null;
-    internal Curve OriginalGeometry => polyline ??= points.Length == 2
-        ? new LineCurve(points[0], points[1]) : new PolylineCurve(points);
-    internal Curve Geometry => restored ?? OriginalGeometry;
-    internal bool IsStraight => Geometry is LineCurve;
-    internal BoundingBox Bounds => new(points);
+    internal Curve RestoredGeometry => restored;
+    internal Curve CreateOriginalGeometry() => count == 1
+        ? new LineCurve(Start, End) : new PolylineCurve(Points());
+    internal Curve DuplicateGeometry() => restored?.DuplicateCurve() ?? CreateOriginalGeometry();
+    internal bool IsStraight => restored is LineCurve || restored == null && count == 1;
+    internal BoundingBox Bounds => new(Points());
+    private Point3d Start => plan.Point(plan.Start(sides[offset]));
+    private Point3d End => plan.Point(plan.Start(sides[offset + count - 1] ^ 1));
+
+    private IEnumerable<Point3d> Points()
+    {
+        for (int i = offset; i < offset + count; i++) yield return plan.Point(plan.Start(sides[i]));
+        yield return End;
+    }
 
     internal void Restore(IReadOnlyDictionary<int, Curve> originals, double fit,
         Func<Curve, bool> compatible)
     {
-        if (points.Length <= 2) return;
+        if (count <= 1) return;
         using var candidate = Candidate(originals, fit);
         if (candidate == null || !candidate.IsValid ||
-            candidate.PointAtStart != points[0] || candidate.PointAtEnd != points[^1] ||
-            candidate.IsClosed != (points[0] == points[^1]))
+            candidate.PointAtStart != Start || candidate.PointAtEnd != End ||
+            candidate.IsClosed != (Start == End))
             return;
         if (candidate is not LineCurve)
         {
             using var self = Intersection.CurveSelf(candidate, fit * .01);
-            if (self is { Count: > 0 } ||
-                !Curve.GetDistancesBetweenCurves(candidate, Geometry, fit * .05, out double error,
+            if (self is { Count: > 0 }) return;
+            using var baseline = DuplicateGeometry();
+            if (!Curve.GetDistancesBetweenCurves(candidate, baseline, fit * .05, out double error,
                     out _, out _, out _, out _, out _) || !(error <= fit))
                 return;
         }
@@ -68,25 +78,29 @@ internal sealed class V2EdgeChain(int left, int right, int[] sides, V2SourceSpan
 
     private Curve Candidate(IReadOnlyDictionary<int, Curve> originals, double fit)
     {
-        var chord = new Line(points[0], points[^1]);
-        if (chord.IsValid && points.All(point => chord.DistanceTo(point, true) <= fit * .25))
+        var chord = new Line(Start, End);
+        if (chord.IsValid && Points().All(point => chord.DistanceTo(point, true) <= fit * .25))
             return new LineCurve(chord);
-        if (spans.Any(span => span.CurveId != Source.CurveId)) return null;
         if (!originals.TryGetValue(Source.CurveId, out var original)) return null;
-        double from = Source.From, to = spans[^1].To;
+        double from = Source.From, to = plan.PrimarySpan(sides[offset + count - 1]).To;
         double sign = Math.Sign(to - from);
         double parameterTolerance = original.Domain.Length * 1e-8;
-        if (sign == 0 || spans.Any(span => sign * (span.To - span.From) < -parameterTolerance))
-            return null;
-        for (int i = 1; i < spans.Length; i++)
-            if (Math.Abs(spans[i - 1].To - spans[i].From) > parameterTolerance)
+        if (sign == 0) return null;
+        double end = from;
+        foreach (int side in Sides)
+        {
+            var span = plan.PrimarySpan(side);
+            if (span.CurveId != Source.CurveId || sign * (span.To - span.From) < -parameterTolerance ||
+                Math.Abs(end - span.From) > parameterTolerance)
                 return null;
+            end = span.To;
+        }
         using var piece = original.Trim(Math.Min(from, to), Math.Max(from, to));
         if (piece == null) return null;
         using var nurbs = piece.ToNurbsCurve();
         if (nurbs == null || sign < 0 && !nurbs.Reverse() ||
-            nurbs.PointAtStart.DistanceTo(points[0]) > fit || nurbs.PointAtEnd.DistanceTo(points[^1]) > fit ||
-            !nurbs.SetStartPoint(points[0]) || !nurbs.SetEndPoint(points[^1]))
+            nurbs.PointAtStart.DistanceTo(Start) > fit || nurbs.PointAtEnd.DistanceTo(End) > fit ||
+            !nurbs.SetStartPoint(Start) || !nurbs.SetEndPoint(End))
             return null;
         return nurbs.DuplicateCurve();
     }
@@ -97,11 +111,7 @@ internal sealed class V2EdgeChain(int left, int right, int[] sides, V2SourceSpan
         restored = null;
     }
 
-    public void Dispose()
-    {
-        Revert();
-        polyline?.Dispose();
-    }
+    public void Dispose() => Revert();
 
     internal static bool Compatible(Curve a, Curve b, double epsilon)
     {

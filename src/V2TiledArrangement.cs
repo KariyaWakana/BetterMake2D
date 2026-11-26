@@ -17,6 +17,7 @@ internal static class V2TiledArrangement
 {
     internal const int DefaultSegmentLimit = 250_000;
     internal const string SeamKind = "TileSeam";
+    private sealed class TileMemoryPressureException : Exception;
     internal readonly record struct SeamLine(bool Vertical, long Axis);
     internal readonly record struct SeamPart(long From, long To, bool Left, int Cell, V2SourceSpan[] Sources);
     internal sealed record Tile(Window Window, int[] Owners, List<V2OwnedEdge> Visible, List<V2OwnedEdge> Interior);
@@ -29,16 +30,19 @@ internal static class V2TiledArrangement
         internal int Parent = id, Best = id, Size = 1;
     }
 
-    internal sealed record Snapshot(Tile State, int[] Candidates, List<Witness> Witnesses,
-        List<(SeamLine Axis, SeamPart Part)> Seams, V2TileReport Report, V2ContactFront Front);
+    internal sealed record Snapshot(Tile State, List<Witness> Witnesses,
+        List<(SeamLine Axis, SeamPart Part)> Seams, V2TileReport Report, V2ContactFront Front, long Topology = -1);
 
-    internal sealed class Replay
+    internal sealed class Replay : IDisposable
     {
         internal readonly List<Snapshot> Tiles = new();
+        internal readonly V2TileTopology Topology = new();
         internal int Rebuilt;
-        internal long RebuiltSegments;
+        internal int Expansions;
+        internal long RebuiltSegments, DirtyCells, FrozenCells;
 
         internal V2ContactFront Frontier = new();
+        public void Dispose() => Topology.Dispose();
     }
     private readonly record struct Fraction(long Numerator, long Denominator) : IComparable<Fraction>
     {
@@ -52,7 +56,7 @@ internal static class V2TiledArrangement
         Action<V2PlanarArrangement> classify, Action cancel, Action<string> progress, List<V2TileReport> tiles,
         bool overlapArrangement = false, Func<int, IReadOnlyList<V2SourceSpan>, bool> retainInterior = null,
         List<V2OwnedEdge> interior = null, bool manageMemory = false, bool reportTotal = false,
-        bool splitOnConvergence = false, V2TileSchedule schedule = null, int windowScale = 1,
+        bool splitOnConvergence = false, bool fast = false, V2TileSchedule schedule = null, int windowScale = 1,
         Replay replay = null, V2SegmentBuffer changed = null, Rect? fixedExtent = null, bool frontierOnly = false)
     {
         var seams = new Dictionary<SeamLine, List<SeamPart>>();
@@ -66,6 +70,9 @@ internal static class V2TiledArrangement
         {
             replay.Rebuilt = 0;
             replay.RebuiltSegments = 0;
+            replay.DirtyCells = 0;
+            replay.FrozenCells = 0;
+            replay.Expansions = 0;
             replay.Frontier = new V2ContactFront();
         }
         if (fixedExtent is Rect extent)
@@ -170,8 +177,9 @@ internal static class V2TiledArrangement
                 state.Visible.Clear();
                 state.Interior?.Clear();
             }
-            var candidates = replay?.Tiles[id].Candidates;
-            var plan = BuildLocal(state.Window, candidates ?? Enumerable.Range(0, sources.Count), out _, cancel, filter: true);
+            var plan = replay == null
+                ? BuildLocal(state.Window, Enumerable.Range(0, sources.Count), out _, cancel, filter: true)
+                : replay.Topology.Load(replay.Tiles[id].Topology, grid);
             if (state.Owners.Length != plan.Cells.Length)
                 throw new InvalidOperationException($"Rebuilding tile {id + 1} changed its local cell indexing.");
             for (int i = 0; i < state.Owners.Length; i++) plan.Cells[i].Owner = state.Owners[i];
@@ -234,43 +242,74 @@ internal static class V2TiledArrangement
 
         void VisitChanged(Snapshot[] old)
         {
-            var moving = changed.ChangedSegments().Select(segment =>
-                (V2PlanarArrangement.Snap(segment.A, grid), V2PlanarArrangement.Snap(segment.B, grid))).ToArray();
+            var moving = changed.Edits().ToArray();
             for (int tileIndex = 0; tileIndex < old.Length; tileIndex++)
             {
                 var tile = old[tileIndex];
                 old[tileIndex] = null;
                 cancel?.Invoke();
                 var window = tile.State.Window;
-                if (tile.Candidates != null &&
-                    moving.Any(pair => Clip(pair.Item1, pair.Item2, window, out _, out _, out _, out _)))
+                if (tile.Topology < 0)
                 {
-                    var route = schedule?.Tiles.FirstOrDefault(tile => tile.Window.Scale(windowScale).Contains(window));
-                    var ids = new List<int>(tile.Candidates.Length);
-                    foreach (int id in tile.Candidates)
-                        if (id < changed.PassStart) ids.Add(id);
-                    foreach (int id in changed.ChangedIndexes())
-                    {
-                        var (a, b) = Ends(id);
-                        if (Clip(a, b, window, out _, out _, out _, out _) &&
-                            (route == null || schedule.Allows(route, sources[id].Source)))
-                            ids.Add(id);
-                    }
-                    ids.Sort();
-                    int count = 0;
-                    for (int i = 0; i < ids.Count; i++)
-                        if (count == 0 || ids[count - 1] != ids[i]) ids[count++] = ids[i];
-                    ids.RemoveRange(count, ids.Count - count);
-                    replay.Rebuilt++;
-                    var candidates = ids.ToArray();
-                    FinishOrSplit(window, candidates, ArrangeChanged(window, candidates));
-                }
-                else
                     Append(tile, reused: true);
+                    continue;
+                }
+                var route = schedule?.Tiles.FirstOrDefault(plan => plan.Window.Scale(windowScale).Contains(window));
+                var localEdits = new List<V2TileSegmentEdit>();
+                int visited = 0;
+                int realCount = tile.Report.Segments;
+                foreach (var edit in moving)
+                {
+                    if ((visited++ & 8191) == 0) cancel?.Invoke();
+                    var before = InWindow(edit.Before);
+                    var after = InWindow(edit.After);
+                    if (before == after) continue;
+                    localEdits.Add(new V2TileSegmentEdit(before, after));
+                    realCount += (after.HasValue ? 1 : 0) - (before.HasValue ? 1 : 0);
+                }
+                if (localEdits.Count == 0)
+                {
+                    replay.FrozenCells += tile.Report.Cells;
+                    Append(tile, reused: true);
+                    continue;
+                }
+                long mark = Stopwatch.GetTimestamp();
+                if (manageMemory)
+                {
+                    process.Refresh();
+                    if (Math.Max(process.WorkingSet64, process.PrivateMemorySize64) >= 3700L * 1024 * 1024)
+                        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+                }
+                var previous = replay.Topology.Load(tile.Topology, grid);
+                V2PlanarArrangement.Patch patch;
+                try { patch = previous.Repair(window, localEdits.ToArray(), classify, cancel); }
+                catch (V2LocalPatchException error)
+                {
+                    throw new V2LocalPatchException($"Tile {tileIndex + 1}/{old.Length}, {localEdits.Count} edits: {error.Message}");
+                }
+                replay.Rebuilt++;
+                replay.DirtyCells += patch.DirtyCells;
+                replay.FrozenCells += patch.FrozenCells;
+                replay.Expansions += patch.Expansions;
+                double seconds = Stopwatch.GetElapsedTime(mark).TotalSeconds - patch.DepthSeconds;
+                Finish(window, (patch.Plan, realCount, seconds), patch);
+
+                V2Segment? InWindow(V2Segment? candidate)
+                {
+                    if (candidate is not V2Segment segment || route != null && !schedule.Allows(route, segment.Source))
+                        return null;
+                    var start = V2PlanarArrangement.Snap(segment.A, grid);
+                    var end = V2PlanarArrangement.Snap(segment.B, grid);
+                    return Clip(start, end, window, out var a, out var b, out double u, out double v)
+                        ? new V2Segment(Point(a), Point(b), Slice(segment.Source, u, v)) : null;
+                }
             }
+            progress?.Invoke($"Local contact patches: {replay.Rebuilt}/{old.Length} tiles, " +
+                $"{replay.DirtyCells} dirty cells, {replay.FrozenCells} frozen cells, {replay.RebuiltSegments} patch " +
+                $"input edges, {replay.Expansions} perimeter expansions.");
         }
 
-        void Append(Snapshot snapshot, bool reused = false)
+        void Append(Snapshot snapshot, bool reused = false, int? workSegments = null)
         {
             int index = states.Count, first = cells.Count;
             var raw = snapshot.State;
@@ -280,7 +319,7 @@ internal static class V2TiledArrangement
             foreach (var (axis, part) in snapshot.Seams)
                 AddSeam(axis, part.Cell < 0 ? part with { Cell = 0 } : part with { Cell = first + part.Cell });
             tiles.Add(reused ? snapshot.Report with { ArrangementSeconds = 0, DepthSeconds = 0 } : snapshot.Report);
-            if (!reused && replay != null) replay.RebuiltSegments += snapshot.Report.Segments;
+            if (!reused && replay != null) replay.RebuiltSegments += workSegments ?? snapshot.Report.Segments;
             if (replay != null)
             {
                 if (!reused) replay.Frontier.Merge(snapshot.Front);
@@ -338,7 +377,7 @@ internal static class V2TiledArrangement
                 (new SeamLine(false, window.Y1), new SeamPart(window.X0, window.X1, false, 0, Array.Empty<V2SourceSpan>()))
             };
             var report = new V2TileReport(window.X0, window.Y0, window.X1, window.Y1, 0, 1, 0, 4, 0, 0, 0);
-            Append(new Snapshot(state, null, new List<Witness> {new(0, owner, false, 0, true)}, parts, report,
+            Append(new Snapshot(state, new List<Witness> {new(0, owner, false, 0, true)}, parts, report,
                 new V2ContactFront()));
         }
 
@@ -354,14 +393,9 @@ internal static class V2TiledArrangement
             if (depth >= 32)
                 throw new InvalidOperationException($"A tile still has {candidates.Length} segments after 32 subdivisions.");
 
-            var choices = new List<(bool X, long Cut, int Largest, long Total)>(2);
-            Choose(x: true, window.X0, window.X1);
-            Choose(x: false, window.Y0, window.Y1);
-            if (choices.Count == 0)
+            if (ChooseSplit(window, candidates) is not { } split)
                 throw new InvalidOperationException($"Cannot subdivide a {candidates.Length}-segment tile on the global grid.");
-            var split = choices.MinBy(choice => (choice.Largest, choice.Total));
-            var lower = split.X ? window with { X1 = split.Cut } : window with { Y1 = split.Cut };
-            var upper = split.X ? window with { X0 = split.Cut } : window with { Y0 = split.Cut };
+            var (lower, upper) = split;
             var (left, right) = SplitCandidates(candidates, lower, upper);
             candidates = null;
             Visit(lower, left, depth + 1);
@@ -392,6 +426,19 @@ internal static class V2TiledArrangement
                 return (first, second);
             }
 
+        }
+
+        (Window Lower, Window Upper)? ChooseSplit(Window window, int[] candidates, int edgeMargin = 8)
+        {
+            var choices = new List<(bool X, long Cut, int Largest, long Total)>(2);
+            Choose(x: true, window.X0, window.X1);
+            Choose(x: false, window.Y0, window.Y1);
+            if (choices.Count == 0) return null;
+            var split = choices.MinBy(choice => (choice.Largest, choice.Total));
+            return split.X
+                ? (window with { X1 = split.Cut }, window with { X0 = split.Cut })
+                : (window with { Y1 = split.Cut }, window with { Y0 = split.Cut });
+
             void Choose(bool x, long lo, long hi)
             {
                 if (hi - lo < 4) return;
@@ -405,7 +452,7 @@ internal static class V2TiledArrangement
                 }
                 var centers = intervals.Select(interval => interval.Min + (interval.Max - interval.Min) / 2).ToArray();
                 Array.Sort(centers);
-                long margin = Math.Max(1, (hi - lo) / 8);
+                long margin = Math.Max(1, (hi - lo) / edgeMargin);
                 long cut = centers.Length == 0 ? lo + (hi - lo) / 2 :
                     Math.Clamp(centers[centers.Length / 2], lo + margin, hi - margin);
                 int first = intervals.Count(interval => interval.Min <= cut);
@@ -446,32 +493,32 @@ internal static class V2TiledArrangement
         (V2PlanarArrangement Plan, int Segments, double Seconds) Arrange(Window window, int[] candidates, Action check)
         {
             long mark = Stopwatch.GetTimestamp();
+            using var probe = manageMemory && splitOnConvergence ? Process.GetCurrentProcess() : null;
+            long nextProbe = mark;
             try
             {
-                var plan = BuildLocal(window, candidates, out int realCount, check);
+                var plan = BuildLocal(window, candidates, out int realCount, probe == null ? check : Guard);
                 return (plan, realCount, Stopwatch.GetElapsedTime(mark).TotalSeconds);
             }
             catch (V2SnapConvergenceException) when (splitOnConvergence)
             {
                 return (null, candidates.Length, Stopwatch.GetElapsedTime(mark).TotalSeconds);
             }
-        }
-
-        (V2PlanarArrangement Plan, int Segments, double Seconds) ArrangeChanged(Window window, int[] candidates)
-        {
-            int allowed = limit + limit / 3;
-            if (manageMemory)
+            catch (TileMemoryPressureException)
             {
-                process.Refresh();
-                if (Math.Max(process.WorkingSet64, process.PrivateMemorySize64) >= 3650L * 1024 * 1024)
-                {
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-                    process.Refresh();
-                    if (Math.Max(process.WorkingSet64, process.PrivateMemorySize64) >= 3850L * 1024 * 1024)
-                        allowed = Math.Min(allowed, 195_000);
-                }
+                return (null, candidates.Length, Stopwatch.GetElapsedTime(mark).TotalSeconds);
             }
-            return candidates.Length > allowed ? (null, candidates.Length, 0) : Arrange(window, candidates, cancel);
+
+            void Guard()
+            {
+                check?.Invoke();
+                long now = Stopwatch.GetTimestamp();
+                if (now < nextProbe) return;
+                nextProbe = now + Stopwatch.Frequency / 20;
+                probe.Refresh();
+                if (Math.Max(probe.WorkingSet64, probe.PrivateMemorySize64) >= 3850L * 1024 * 1024)
+                    throw new TileMemoryPressureException();
+            }
         }
 
         void FinishOrSplit(Window window, int[] candidates,
@@ -479,18 +526,25 @@ internal static class V2TiledArrangement
         {
             if (arranged.Plan != null)
             {
-                Finish(window, candidates, arranged);
+                Finish(window, arranged);
                 return;
             }
-            long width = window.X1 - window.X0, height = window.Y1 - window.Y0;
-            if (depth >= 12 || Math.Max(width, height) < 4) throw new V2SnapConvergenceException();
-            bool x = width >= height;
-            long middle = x ? window.X0 + width / 2 : window.Y0 + height / 2;
-            var lower = x ? window with { X1 = middle } : window with { Y1 = middle };
-            var upper = x ? window with { X0 = middle } : window with { Y0 = middle };
+            if (depth >= 32 || ChooseSplit(window, candidates, edgeMargin: 64) is not { } split)
+                throw new V2SnapConvergenceException();
+            var (lower, upper) = split;
             progress?.Invoke($"Subdividing a {arranged.Segments}-segment tile on the same grid after {arranged.Seconds:F2} s of snap rounding.");
+            CompactFailedTile();
             Split(lower);
+            CompactFailedTile();
             Split(upper);
+
+            void CompactFailedTile()
+            {
+                if (!manageMemory) return;
+                process.Refresh();
+                if (Math.Max(process.WorkingSet64, process.PrivateMemorySize64) >= 3300L * 1024 * 1024)
+                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+            }
 
             void Split(Window child)
             {
@@ -503,18 +557,18 @@ internal static class V2TiledArrangement
                     if (Clip(a, b, child, out _, out _, out _, out _)) ids.Add(id);
                 }
                 var list = ids.ToArray();
-                var childPlan = previousTiles is { Length: > 0 }
-                    ? ArrangeChanged(child, list) : Arrange(child, list, cancel);
+                var childPlan = Arrange(child, list, cancel);
                 FinishOrSplit(child, list, childPlan, depth + 1);
             }
         }
 
-        void Finish(Window window, int[] candidates, (V2PlanarArrangement Plan, int Segments, double Seconds) arranged)
+        void Finish(Window window, (V2PlanarArrangement Plan, int Segments, double Seconds) arranged,
+            V2PlanarArrangement.Patch? patch = null)
         {
             var (plan, realCount, arrange) = arranged;
             long mark = Stopwatch.GetTimestamp();
-            classify(plan);
-            double depth = Stopwatch.GetElapsedTime(mark).TotalSeconds;
+            if (!patch.HasValue) classify(plan);
+            double depth = patch?.DepthSeconds ?? Stopwatch.GetElapsedTime(mark).TotalSeconds;
             var state = new Tile(window, plan.Cells.Select(cell => cell.Owner).ToArray(), new List<V2OwnedEdge>(),
                 retainInterior == null ? null : new List<V2OwnedEdge>());
             var tokens = new Dictionary<int, int>();
@@ -542,8 +596,9 @@ internal static class V2TiledArrangement
             var tile = new V2TileReport(window.X0, window.Y0, window.X1, window.Y1, realCount,
                 plan.Cells.Length, state.Visible.Count, plan.EdgeCount, plan.Rounds, arrange, depth);
             var front = replay == null ? null : new V2ContactFront();
-            front?.Read(plan, Math.Max(grid * 4, modelTolerance));
-            Append(new Snapshot(state, replay == null ? null : candidates, witnesses, parts, tile, front));
+            front?.Read(patch?.Changed ?? plan, Math.Max(grid * 4, modelTolerance));
+            long topology = replay == null ? -1 : replay.Topology.Save(plan);
+            Append(new Snapshot(state, witnesses, parts, tile, front, topology), workSegments: patch?.InputEdges);
             progress?.Invoke($"Tile {tiles.Count}: {tile.Segments} segments, {tile.Cells} cells, {tile.VisibleEdges} real boundary edges.");
         }
 
@@ -567,7 +622,7 @@ internal static class V2TiledArrangement
             for (int i = 0; i < corners.Length; i++)
                 batch.Add(new V2Segment(Point(corners[i]), Point(corners[(i + 1) % corners.Length]),
                     new V2SourceSpan(-1, -1, SeamKind, 0, 1)));
-            return V2PlanarArrangement.Build(batch, grid, check, fast: splitOnConvergence);
+            return V2PlanarArrangement.Build(batch, grid, check, fast: fast);
         }
 
         void CollectEdges(Window window, V2PlanarArrangement plan, Tile state)
@@ -588,7 +643,7 @@ internal static class V2TiledArrangement
         Point2d Point(Key key) => new(key.X * grid, key.Y * grid);
     }
 
-    private static SeamLine? OnSeam(Window window, Key a, Key b) =>
+    internal static SeamLine? OnSeam(Window window, Key a, Key b) =>
         a.X == b.X && (a.X == window.X0 || a.X == window.X1) ? new SeamLine(true, a.X) :
         a.Y == b.Y && (a.Y == window.Y0 || a.Y == window.Y1) ? new SeamLine(false, a.Y) : null;
 

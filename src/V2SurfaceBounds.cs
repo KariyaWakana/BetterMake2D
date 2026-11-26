@@ -97,17 +97,19 @@ internal sealed class V2SurfaceBounds
         contactRead = new bool[faces.Length];
         planarBounds = new V2OrientedBounds?[faces.Length];
         hints = new Quad[faces.Length][];
+        int patchBudget = faces.Length > 70000 ? 8 : PatchBudget;
         for (int i = 0; i < faces.Length; i++)
         {
             cancel?.Invoke();
             if (faces[i].Face == null || faces[i].Plane.HasValue || faces[i].Triangles != null) continue;
             var quads = faces[i].Face.GetMesh(MeshType.Render) == null ? new List<Quad>() : null;
-            boxes[i] = Build(faces[i], tolerance, hints: quads);
+            boxes[i] = Build(faces[i], tolerance, budget: patchBudget, hints: quads);
             if (quads is { Count: > 0 } && boxes[i] != null) hints[i] = quads.ToArray();
         }
     }
 
     internal IReadOnlyList<Quad> HintQuads(int id) => hints[id];
+    internal void ReleaseHints() => Array.Clear(hints);
 
     internal void ReleaseContactTrees()
     {

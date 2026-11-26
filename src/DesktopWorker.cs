@@ -87,9 +87,8 @@ public static class DesktopWorker
                     ? V2HiddenMode.IncludeBackFaces : V2HiddenMode.Occluded,
                 enableHiZ: options.HiZ, tangentEdges: options.Tangent, hiddenSourceFilter: Hidden,
                 lineLayerOf: source => (selected.Contains(source) ? "1" : "0") + Layer(source), reportTileTotal: true,
-                overlapTileArrangement: true, accuracy: options.Accuracy);
-            foreach (var inputItem in inputs) inputItem.Dispose();
-            inputs.Clear();
+                overlapTileArrangement: true, accuracy: options.Accuracy, releaseInputs: ReleaseInputs);
+            ReleaseInputs();
             progress?.Invoke($"Depth: {drawing.Rays} probes, {drawing.MeshHits}/{drawing.MeshLookups} render mesh hits, " +
                 $"{drawing.NativeRays} exact Brep queries ({drawing.NativeSeconds:F2} s); " +
                 $"{drawing.Contacts} Brep contacts, {drawing.Tiles.Count} tiles, image grid {drawing.ImageGrid:G5}.");
@@ -140,10 +139,10 @@ public static class DesktopWorker
             progress?.Invoke("output");
             // The proxy meshes, BVHs and tiles are unreachable after Solve returns.
             // Recover that space before the archive writer allocates its own copy.
-            bool largeProxyDrawing = drawing.ProxyTriangles >= 1_000_000;
-            if (largeProxyDrawing) CollectFinishedStage();
+            bool largeDrawing = V2DrawingOutput.LargeDrawing(drawing);
+            if (largeDrawing) CollectFinishedStage();
             string canonical = Path.Combine(folder, "drawing.3dm");
-            V2DrawingOutput.Write(drawing, canonical, units, tolerance, styles, releaseDrawing: largeProxyDrawing);
+            V2DrawingOutput.Write(drawing, canonical, units, tolerance, styles, releaseDrawing: largeDrawing);
             drawing.Dispose();
             if (exportVectors)
             {
@@ -158,13 +157,19 @@ public static class DesktopWorker
             int written = 0, hatchFallbacks = 0;
             if (options.Insert || options.Export && options.Model)
             {
-                if (largeProxyDrawing) CollectFinishedStage();
+                if (largeDrawing) CollectFinishedStage();
                 written = DesktopOutput.CreatePresentation(canonical, Path.Combine(folder, "presentation.3dm"), options.Fill,
                     out hatchFallbacks);
             }
             return new(regions, lines, written, culled, vectorExtent, hatchFallbacks);
         }
-        finally { foreach (var inputItem in inputs) inputItem.Dispose(); }
+        finally { ReleaseInputs(); }
+
+        void ReleaseInputs()
+        {
+            foreach (var inputItem in inputs) inputItem.Dispose();
+            inputs.Clear();
+        }
     }
 
     private static void CollectFinishedStage()

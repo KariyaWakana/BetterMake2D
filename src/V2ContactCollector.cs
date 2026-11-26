@@ -13,7 +13,7 @@ internal sealed class V2ContactCollector(V2Face[] faces, V2Drawing drawing, IPro
 {
     internal void Read(int[] members, int[] contactMembers, int? background, V2TileSchedule tileSchedule,
         Action<Curve, int, int> emit, V2LazyContact lazy = null,
-        IReadOnlyList<V2ContactPair> pending = null, bool pendingCoarseChecked = false)
+        IReadOnlyList<V2ContactPair> pending = null)
     {
         long indexed = Stopwatch.GetTimestamp();
         var pairs = pending == null ? new V2ContactIndex(faces, contactMembers) : null;
@@ -21,13 +21,16 @@ internal sealed class V2ContactCollector(V2Face[] faces, V2Drawing drawing, IPro
         var patches = new ContactSupports(faces);
         // The tile schedule already establishes one canonical request
         // per pair. A native pilot or serial replay would evaluate it twice.
-        int lanes = lazy == null && pending == null && tileSchedule == null && members.Length >= 2048 ? Math.Min(4, Environment.ProcessorCount) : 1;
+        int lanes = lazy == null && pending == null && tileSchedule == null && members.Length is >= 2048 and <= 70000
+            ? Math.Min(4, Environment.ProcessorCount) : 1;
         var queued = new List<(int First, int Second)>(V2ContactBatch.Capacity);
         var deferred = new List<(int After, int First, int Second, Line[] Lines)>();
         var neighborsByFace = new HashSet<int>[faces.Length];
         var candidates = new List<int>();
         long searchTicks = 0, broadTicks = 0, boundTicks = 0, cacheTicks = 0, nativeTicks = 0,
-            emptyTicks = 0, coincidenceTicks = 0, resolveTicks = 0, planarTicks = 0, contactTreeTicks = 0;
+            emptyTicks = 0, coincidenceTicks = 0, resolveTicks = 0, planarTicks = 0, contactTreeTicks = 0,
+            mixedRefinementTicks = 0;
+        int mixedRefinements = 0, mixedExtraCurves = 0;
         int batchTrials = 0, batchWins = 0;
         bool batchRejected = false;
         using var contactBatch = new V2ContactBatch(lanes, id =>
@@ -46,7 +49,7 @@ internal sealed class V2ContactCollector(V2Face[] faces, V2Drawing drawing, IPro
                     if (k > 0 && (k & 32767) == 0)
                         progress?.Invoke($"Lazy contact batch: {k}/{pending.Count} pairs checked, {drawing.Contacts - previous} BrepBrep.");
                     var pair = pending[k];
-                    Native(pair.First, pair.Second, pendingCoarseChecked);
+                    Native(pair.First, pair.Second);
                 }
                 return;
             }
@@ -131,12 +134,12 @@ internal sealed class V2ContactCollector(V2Face[] faces, V2Drawing drawing, IPro
                 Native(i, j);
             }
 
-            void Native(int i, int j, bool coarseChecked = false)
+            void Native(int i, int j)
             {
                 var a = faces[i];
                 var b = faces[j];
                 long bounds = Stopwatch.GetTimestamp();
-                bool separated = (!coarseChecked && surfaceBounds.Separated(i, j, faces, tolerance)) ||
+                bool separated = surfaceBounds.Separated(i, j, faces, tolerance) ||
                     surfaceBounds.SeparatedOnRenderAxis(i, j, faces, tolerance);
                 boundTicks += Stopwatch.GetTimestamp() - bounds;
                 if (separated)
@@ -312,11 +315,34 @@ internal sealed class V2ContactCollector(V2Face[] faces, V2Drawing drawing, IPro
                     if (curves is not { Length: > 0 }) return found && points is not { Length: > 0 };
                     drawing.ContactCurveHits++;
                     long resolve = Stopwatch.GetTimestamp();
-                    foreach (var curve in curves)
+                    try
                     {
-                        using (curve)
-                            emit(curve, i, j);
+                        foreach (var curve in curves) emit(curve, i, j);
+                        var a = faces[i];
+                        var b = faces[j];
+                        if (a.Plane.HasValue != b.Plane.HasValue)
+                        {
+                            var planar = a.Plane ?? b.Plane.Value;
+                            var curved = a.Plane.HasValue ? b.Face : a.Face;
+                            if (V2MixedContact.NearTangent(curved, planar, curves, tolerance))
+                            {
+                                long refinement = Stopwatch.GetTimestamp();
+                                mixedRefinements++;
+                                drawing.Contacts++;
+                                var extra = a.Plane.HasValue
+                                    ? V2MixedContact.Refine(supportB, supportA, curves, tolerance)
+                                    : V2MixedContact.Refine(supportA, supportB, curves, tolerance);
+                                long ticks = Stopwatch.GetTimestamp() - refinement;
+                                mixedRefinementTicks += ticks;
+                                nativeTicks += ticks;
+                                resolve += ticks;
+                                mixedExtraCurves += extra.Count;
+                                try { foreach (var curve in extra) emit(curve, i, j); }
+                                finally { foreach (var curve in extra) curve.Dispose(); }
+                            }
+                        }
                     }
+                    finally { foreach (var curve in curves) curve.Dispose(); }
                     resolveTicks += Stopwatch.GetTimestamp() - resolve;
                     return false;
             }
@@ -339,8 +365,11 @@ internal sealed class V2ContactCollector(V2Face[] faces, V2Drawing drawing, IPro
             addTime("analytic planar contact", Stopwatch.GetElapsedTime(0, planarTicks));
             addTime("native BrepBrep", Stopwatch.GetElapsedTime(0, nativeTicks));
             addTime("empty native BrepBrep", Stopwatch.GetElapsedTime(0, emptyTicks));
+            addTime("near-tangent mixed contact refinement", Stopwatch.GetElapsedTime(0, mixedRefinementTicks));
             addTime("contact curve anchoring and projection", Stopwatch.GetElapsedTime(0, resolveTicks));
             progress?.Invoke($"Contact support cache: {patches.Hits} hits, {patches.Misses} builds, {patches.Evictions} evictions.");
+            if (mixedRefinements > 0)
+                progress?.Invoke($"Near-tangent mixed contacts: {mixedRefinements} refined, {mixedExtraCurves} supplementary curves.");
             patches.Dispose();
             planarContact.ClearRims();
             contactBatch.ReleaseCopies();
@@ -382,7 +411,8 @@ internal sealed class V2ContactCollector(V2Face[] faces, V2Drawing drawing, IPro
             entries.Add(index, used.AddFirst((index, shape, cost)));
             bytes += cost;
             // The two most recent supports are the two arguments of the current native query.
-            while (used.Count > 2 && (used.Count > 4096 || bytes > 144L * 1024 * 1024))
+            long byteBudget = (faces.Length > 70000 ? 48L : 144L) * 1024 * 1024;
+            while (used.Count > 2 && (used.Count > 4096 || bytes > byteBudget))
             {
                 Evictions++;
                 var old = used.Last.Value;

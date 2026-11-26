@@ -13,7 +13,7 @@ internal readonly record struct V2OwnedEdge(V2PlanarArrangement.Key A, V2PlanarA
 internal sealed class V2SnapConvergenceException() : InvalidOperationException(
     "The snap-rounded arrangement did not stabilize after 12 rounds.");
 
-internal sealed class V2PlanarArrangement
+internal sealed partial class V2PlanarArrangement
 {
     internal readonly record struct Key(long X, long Y) : IComparable<Key>
     {
@@ -87,8 +87,10 @@ internal sealed class V2PlanarArrangement
                     });
                 }
                 int noding = progress == null ? 0 : points.Count(group => group != null);
+                int visited = 0;
                 foreach (var point in hot ?? Enumerable.Empty<Key>())
                 {
+                    if ((visited++ & 511) == 0) cancel?.Invoke();
                     var pixel = new Rect(point.X - .5, point.Y - .5, point.X + .5, point.Y + .5);
                     boxes.Search(pixel, id =>
                     {
@@ -106,6 +108,7 @@ internal sealed class V2PlanarArrangement
             var fragments = new List<Edge>(edges.Length);
             for (int i = 0; i < edges.Length; i++)
             {
+                if ((i & 511) == 0) cancel?.Invoke();
                 var edge = edges[i];
                 if (points[i] == null)
                 {
@@ -127,6 +130,7 @@ internal sealed class V2PlanarArrangement
                     }).ToArray()));
                 }
             }
+            cancel?.Invoke();
             edges = Canonical(fragments);
 
             void Insert(int index, Key point)
@@ -225,7 +229,13 @@ internal sealed class V2PlanarArrangement
 
     internal List<V2OwnedEdge> VisibleEdges(IReadOnlyList<int> owners = null)
     {
-        var result = new List<V2OwnedEdge>();
+        var result = boundaryOwners == null ? new List<V2OwnedEdge>() : new List<V2OwnedEdge>(edges.Length);
+        result.AddRange(EnumerateVisibleEdges(owners));
+        return result;
+    }
+
+    internal IEnumerable<V2OwnedEdge> EnumerateVisibleEdges(IReadOnlyList<int> owners = null)
+    {
         for (int i = 0; i < edges.Length; i++)
         {
             int left = owners == null ? Owner(2 * i) : owners[2 * i];
@@ -233,10 +243,9 @@ internal sealed class V2PlanarArrangement
             if (left != right)
             {
                 var edge = edges[i];
-                result.Add(new V2OwnedEdge(edge.A, edge.B, left, right, edge.Sources));
+                yield return new V2OwnedEdge(edge.A, edge.B, left, right, edge.Sources);
             }
         }
-        return result;
     }
 
     internal List<V2EdgeChain> BoundaryChains(int[] chainBySide)
@@ -249,12 +258,11 @@ internal sealed class V2PlanarArrangement
             if (left == right) continue;
             Add(side);
             Add(side ^ 1);
-            // Prefer the boundary of a visible incident face, when several sources coincide.
-            primary[i] = edges[i].Sources.MinBy(span =>
-                (span.Kind == "Mask" ? 1 : 0, span.Face == left || span.Face == right ? 0 : 1,
-                 span.Kind == "SectionCut" ? 0 : span.Kind == "Contact" ? 2 : 1, span.CurveId));
+            primary[i] = PrimarySpan(side);
         }
         var chains = new List<V2EdgeChain>();
+        var sides = new int[edges.Length];
+        int used = 0;
         for (int i = 0; i < edges.Length; i++)
         {
             int first = i * 2;
@@ -265,18 +273,16 @@ internal sealed class V2PlanarArrangement
                 first = prior ^ 1;
                 prior = Continue(first ^ 1);
             }
-            var sides = new List<int>();
+            int offset = used;
             int side = first, id = chains.Count + 1;
             do
             {
-                sides.Add(side);
+                sides[used++] = side;
                 chainBySide[side] = id;
                 chainBySide[side ^ 1] = -id;
                 side = Continue(side);
             } while (side >= 0 && chainBySide[side] == 0);
-            var points = sides.Select(part => Point(Start(part))).Append(Point(Start(sides[^1] ^ 1))).ToArray();
-            chains.Add(new V2EdgeChain(Owner(first), Owner(first ^ 1), sides.ToArray(),
-                sides.Select(Span).ToArray(), points));
+            chains.Add(new V2EdgeChain(Owner(first), Owner(first ^ 1), this, sides, offset, used - offset, Span(first)));
         }
         return chains;
 
@@ -312,6 +318,21 @@ internal sealed class V2PlanarArrangement
             Int128 bx = (Int128)end.X - join.X, by = (Int128)end.Y - join.Y;
             return ax * by == ay * bx && ax * bx + ay * by > 0 ? adjacent : -1;
         }
+    }
+
+    internal V2SourceSpan PrimarySpan(int side)
+    {
+        var sources = edges[side / 2].Sources;
+        int left = Owner(side), right = Owner(side ^ 1);
+        // Prefer a visible incident face when several source edges coincide.
+        var best = sources[0];
+        for (int i = 1; i < sources.Length; i++)
+            if (Priority(sources[i]).CompareTo(Priority(best)) < 0) best = sources[i];
+        return (side & 1) == 0 ? best : best with { From = best.To, To = best.From };
+
+        (int, int, int, int) Priority(V2SourceSpan span) =>
+            (span.Kind == "Mask" ? 1 : 0, span.Face == left || span.Face == right ? 0 : 1,
+                span.Kind == "SectionCut" ? 0 : span.Kind == "Contact" ? 2 : 1, span.CurveId);
     }
 
     internal IEnumerable<string> InspectBoundary(int face)

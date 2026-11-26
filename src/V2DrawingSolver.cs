@@ -13,7 +13,7 @@ internal sealed class V2Drawing : IDisposable
     internal readonly List<DrawnEdge> Curves = new();
     internal readonly List<string> Issues = new();
     internal readonly Dictionary<string, TimeSpan> Timing = new();
-    internal int InputFaces, HiddenFaces, Segments;
+    internal int InputFaces, BackfaceCulled, HiddenFaces, Segments;
     internal int HiZFaces, HiZPixels, HiZOccluders, HiZCurvedOccluders;
     internal int PlannedTiles, ProvenTiles, ContactBoxPrunes, TileContactPrunes, TileContactBoxPrunes;
     internal long TileFaceCandidates, TileFacesHidden, ArrangementSegments;
@@ -39,17 +39,19 @@ internal sealed class V2Drawing : IDisposable
     internal readonly List<(int Faces, int Segments, int Cells, bool Background)> ClusterSizes = new();
     internal readonly List<V2TileReport> Tiles = new();
     internal double PlaneSeconds, NativeSeconds, ImageGrid;
-    internal int LazyInitialOwners, LazyCandidates, LazyRounds, LazyRebuiltTiles, LazyCompletionCovered;
+    internal int LazyInitialOwners, LazyCandidates, LazyRounds, LazyRebuiltTiles, LazyPendingAtFixedPoint;
     internal long LazyInitialNeighbors, LazyDeferred2D, LazyDeferredDepth;
     internal int ContactCurveHits;
-    internal long LazyPassSegments;
+    internal long LazyPassSegments, LazyDirtyCells, LazyFrozenCells;
+    internal int LazyPatchExpansions;
     internal readonly List<V2LazyContactPass> LazyContactPasses = new();
     internal string LazyContactSummary =>
         $"Lazy contacts: {LazyInitialOwners}/{LazyCandidates} Pass 1 owners; " +
         $"{LazyInitialNeighbors}/{ContactCandidates} initial owner-neighbor/AABB pairs; " +
         $"{LazyDeferred2D} XY and {LazyDeferredDepth} depth deferrals across rounds; " +
-        $"{LazyRounds} native batches, {LazyCompletionCovered} extra hidden contact boxes, " +
-        $"{LazyRebuiltTiles} tile rebuilds and {LazyPassSegments} segments processed across passes.";
+        $"{LazyRounds} native batches, {LazyPendingAtFixedPoint} pairs outside the fixed-point front, " +
+        $"{LazyRebuiltTiles} tile updates and {LazyPassSegments} segments processed across passes; " +
+        $"{LazyDirtyCells} dirty and {LazyFrozenCells} frozen cells, {LazyPatchExpansions} perimeter expansions.";
     internal string TileSummary =>
         $"Tile-first: {PlannedTiles} planned, {ProvenTiles} certified, {Tiles.Count} executed; " +
         $"{TileFacesHidden}/{TileFaceCandidates} face-window candidates hidden; " +
@@ -75,14 +77,17 @@ internal static class V2DrawingSolver
         V2HiddenMode hiddenMode = V2HiddenMode.None, string hiddenLayer = null, bool enableHiZ = true,
         IReadOnlyList<Plane> clipPlanes = null, IProjectionCamera projection = null, bool tangentEdges = false,
         Func<string, bool> hiddenSourceFilter = null, Func<string, string> lineLayerOf = null, bool reportTileTotal = false,
-        bool renderMeshHints = true, V2Accuracy accuracy = V2Accuracy.Exact)
+        bool renderMeshHints = true, V2Accuracy accuracy = V2Accuracy.Exact,
+        bool? spillDuringBoundaryCollection = null, Action<string> profileMemory = null,
+        Action<V2PlanarArrangement> inspectStitched = null, Action releaseInputs = null)
     {
         var drawing = new V2Drawing();
         drawing.SupportFaces = inputs.Sum(input => input.Brep?.Faces.Count ?? 1);
         drawing.RegisteredFaces = registered?.Values.Sum(indices => indices.Length) ?? drawing.SupportFaces;
         long stage = Stopwatch.GetTimestamp();
         var clips = projection?.Clips ?? new V2ClipPlanes(clipPlanes ?? Array.Empty<Plane>());
-        var faces = ReadFaces(inputs, tolerance, focus, cancel, projection, clips).ToArray();
+        var faces = ReadFaces(inputs, tolerance, focus, cancel, projection, clips, hiddenMode, drawing).ToArray();
+        progress?.Invoke($"BackfaceCulled: {drawing.BackfaceCulled}/{faces.Length + drawing.BackfaceCulled} original faces screened.");
         if (faces.Length == 0) return drawing;
         IProjectionCamera camera = projection ?? new V2ParallelCamera(faces.Min(face => face.Box.Min.Z) - tolerance * 4,
             faces.Max(face => face.Box.Max.Z) + tolerance * 4, clipPlanes);
@@ -153,18 +158,25 @@ internal static class V2DrawingSolver
         drawing.NativeMeshTriangles = faces.Sum(face => face.Triangles?.TriangleCount ?? 0);
         drawing.SourceMeshTriangles = faces.Sum(face => face.Triangles?.SourceTriangles ?? 0);
         drawing.RejectedViewTriangles = faces.Sum(face => face.Triangles?.RejectedViewTriangles ?? 0);
+        profileMemory?.Invoke("indices: start");
         var surfaceBounds = new V2SurfaceBounds(faces, tolerance, cancel);
+        profileMemory?.Invoke("indices: surface bounds");
         Record("conservative surface bounds", stage);
         stage = Stopwatch.GetTimestamp();
         using var index = new V2DepthIndex(faces, camera, tolerance, surfaceBounds, hiddenOnly, imageTolerance, renderMeshHints);
-        using var depthPool = new V2DepthPool(index, faces.Length >= 2048 ? Math.Min(4, Environment.ProcessorCount) : 1);
+        surfaceBounds.ReleaseHints();
+        profileMemory?.Invoke("indices: depth index");
+        int depthLanes = faces.Length > 70000 ? 2 : 4;
+        using var depthPool = new V2DepthPool(index, faces.Length >= 2048 ? Math.Min(depthLanes, Environment.ProcessorCount) : 1);
         using var planarContact = new V2PlanarContact(faces, clips, tolerance);
+        profileMemory?.Invoke("indices: planar contact");
         var contacts = new V2ContactCollector(faces, drawing, camera, clips, hiZ, surfaceBounds,
             planarContact, tolerance, cancel, progress, AddTime);
         var backgrounds = Array.Empty<int>();
         var hiddenOverlay = hiddenOnly == null ? null : hiZCovered;
         var groups = focus.HasValue ? Array.Empty<int[]>() : Clusters(faces, imageTolerance, out backgrounds,
             peelBackgrounds: hiddenMode == V2HiddenMode.None && !clips.Active, cancel, hiddenOverlay);
+        profileMemory?.Invoke("indices: clusters");
         // Preserve the finer topology where different projected owners can meet.
         // The paper-resolution floor applies only after proving there is no such overlap.
         if (!focus.HasValue && hiddenMode == V2HiddenMode.None && camera is V2PerspectiveCamera perspective &&
@@ -182,7 +194,9 @@ internal static class V2DrawingSolver
             progress?.Invoke($"Native mesh depth: {drawing.NativeMeshes} owners, {drawing.NativeMeshTriangles} triangles " +
                 $"from {drawing.SourceMeshTriangles} ({drawing.RejectedViewTriangles} discarded by the view frustum).");
         var boundaries = new V2BoundaryCollector(faces, drawing, camera, clips,
-            tolerance, imageTolerance, chordTolerance, angle, cancel, Measure);
+            tolerance, imageTolerance, chordTolerance, angle, cancel, Measure,
+            detachOriginals: spillDuringBoundaryCollection == true ||
+                spillDuringBoundaryCollection != false && faces.Length > 50000);
         double sharedGrid = drawing.ImageGrid;
         var masks = new List<V2Segment>();
         var hiddenEdges = hiddenMode == V2HiddenMode.None ? null :
@@ -385,17 +399,24 @@ internal static class V2DrawingSolver
             using var hiddenSources = hiddenMode == V2HiddenMode.None ? null : new V2HiddenSources();
             var meshRims = drawing.NativeMeshes == 0 ? null : new Dictionary<int, Line>();
             var edgeIds = new Dictionary<(string Source, int Edge), int>();
-            var tangencies = new V2TangentEdges(faces, camera, tolerance, angle);
-            using var sourceSegments = new V2SegmentBuffer();
+            using var tangencies = new V2TangentEdges(faces, camera, tolerance, angle);
+            bool collectOnDisk = !focus.HasValue && (spillDuringBoundaryCollection ?? members.Length > 50000);
+            using var sourceSegments = new V2SegmentBuffer(collectOnDisk);
             var segments = sourceSegments;
             using var contactContours = new V2ProjectedCurves();
             var silhouetteSegments = new Dictionary<int, List<int>>();
             var silhouetteSpans = new Dictionary<int, List<(Curve Curve, List<int> Segments)>>();
             var curvedTrimSegments = new Dictionary<int, List<int>>();
             var curvedTrims = new Dictionary<int, List<(int Curve, BrepEdge Edge, List<int> Segments)>>();
+            int boundariesRead = 0;
             foreach (int member in members)
             {
+                boundariesRead++;
+                if (collectOnDisk && (boundariesRead & 4095) == 0)
+                    progress?.Invoke($"Projected boundaries: {boundariesRead}/{members.Length} faces, {segments.Count} lossless segments.");
                 if (tileSchedule != null && !tileSchedule.NeedsBoundary(member)) continue;
+                var sample = (boundariesRead & 31) == 0 ? profileMemory : null;
+                sample?.Invoke("boundary: face");
                 foreach (var segment in boundaries.Read(member, originals, edgeIds, meshRims,
                     HiddenLayerMatches(faces[member].Id.Source) ? hiddenSources : null, tangencies, (id, model) =>
                 {
@@ -413,7 +434,7 @@ internal static class V2DrawingSolver
                     if (!curvedTrims.TryGetValue(member, out var list))
                         curvedTrims.Add(member, list = new List<(int, BrepEdge, List<int>)>());
                     list.Add((id, edge, indexes));
-                }))
+                }, sample))
                 {
                     if (segment.Source.Kind == "Silhouette" &&
                         silhouetteSegments.TryGetValue(segment.Source.CurveId, out var silhouette))
@@ -423,6 +444,7 @@ internal static class V2DrawingSolver
                         trim.Add(segments.Count);
                     segments.Add(segment);
                 }
+                sample?.Invoke("boundary: stored segments");
             }
             if (useMasks)
             {
@@ -434,12 +456,9 @@ internal static class V2DrawingSolver
             int[] contactMembers = hiZCovered is { Count: > 0 } && hiddenOnly != null
                 ? members.Where(id => !hiZCovered.Contains(faces[id].Id)).ToArray() : members;
             using var deferredContacts = accuracy == V2Accuracy.Exact && !focus.HasValue && !useMasks
-                ? new V2LazyContact(faces, camera, surfaceBounds, hiZ, drawing, tolerance, cancel, progress) : null;
+                ? new V2LazyContact(faces, camera, surfaceBounds, drawing, tolerance, cancel, progress) : null;
             var lazy = deferredContacts;
             contacts.Read(members, contactMembers, background, tileSchedule, AddContact, lazy);
-            if (lazy is { HasPending: true } && segments.Count == 0)
-                contacts.Read(members, contactMembers, background, tileSchedule, AddContact,
-                    pending: lazy.Select(new V2ContactFront(), completion: true), pendingCoarseChecked: true);
             if (lazy is not { HasPending: true }) lazy = null;
 
             void AddContact(Curve model, int first, int second)
@@ -591,7 +610,8 @@ internal static class V2DrawingSolver
             if (segments.Count == 0) return;
             int segmentCount = segments.Count;
             bool tiled = tileLimit > 0 && (tileSchedule != null || segmentCount > tileLimit || minimumTileDepth > 0);
-            bool spilled = tiled && segmentCount >= (tileSchedule == null && lazy == null ? 4_500_000 : 2_000_000);
+            bool spilled = collectOnDisk || tiled &&
+                segmentCount >= (tileSchedule == null && lazy == null ? 4_500_000 : 2_000_000);
             if (spilled)
             {
                 segments.Spill(cancel);
@@ -600,7 +620,8 @@ internal static class V2DrawingSolver
             }
             var tiles = new List<V2TileReport>();
             var interior = meshRims == null && hiddenSources == null ? null : new List<V2OwnedEdge>();
-            var replay = tiled && lazy != null ? new V2TiledArrangement.Replay() : null;
+            using var replayStore = lazy == null ? null : new V2TiledArrangement.Replay();
+            var replay = tiled ? replayStore : null;
             var depthMemo = lazy != null ? new V2DepthMemo(segmentCount) : null;
             Rect? extent = lazy != null && tileSchedule == null
                 ? new Rect(members.Min(id => faces[id].Screen.Left), members.Min(id => faces[id].Screen.Bottom),
@@ -621,15 +642,7 @@ internal static class V2DrawingSolver
                 while (lazy.HasPending)
                 {
                     cancel?.Invoke();
-                    bool completion = frontier.Count == 0 || round >= 8;
-                    if (round >= 8)
-                        progress?.Invoke("Lazy contact iteration limit reached. Evaluating all unresolved pairs without a coverage proof.");
-                    var pairs = lazy.Select(frontier, completion);
-                    if (pairs.Count == 0 && lazy.HasPending)
-                    {
-                        completion = true;
-                        pairs = lazy.Select(frontier, completion);
-                    }
+                    var pairs = lazy.Select(frontier);
                     if (pairs.Count == 0) break;
                     round++;
                     int selected = pairs.Count;
@@ -637,10 +650,8 @@ internal static class V2DrawingSolver
                     int curveHits = drawing.ContactCurveHits;
                     var nativeTime = drawing.Timing.GetValueOrDefault("native BrepBrep");
                     long started = Stopwatch.GetTimestamp();
-                    int previousSegments = segments.Count;
                     segments.TrackChanges();
-                    contacts.Read(members, contactMembers, background, tileSchedule, AddContact, pending: pairs,
-                        pendingCoarseChecked: completion);
+                    contacts.Read(members, contactMembers, background, tileSchedule, AddContact, pending: pairs);
                     AddTime("boundaries and 3D contact", Stopwatch.GetElapsedTime(started));
                     pairs = null;
                     if (!lazy.HasPending)
@@ -649,12 +660,12 @@ internal static class V2DrawingSolver
                         surfaceBounds.ReleaseContactTrees();
                     }
                     int rebuilt = 0;
-                    if (segments.Count != previousSegments || segments.ChangedIndexes().Any())
+                    if (segments.HasEdits)
                     {
                         if (!tiled && tileLimit > 0 && segments.Count > tileLimit)
                         {
                             tiled = true;
-                            replay = new V2TiledArrangement.Replay();
+                            replay = replayStore;
                         }
                         if (tiled && segments.ResidentCount >= (spilled ? 800_000 : 2_000_000))
                         {
@@ -666,17 +677,24 @@ internal static class V2DrawingSolver
                         rebuilt = replay == null ? 1 : replay.Rebuilt == 0 ? tiles.Count : replay.Rebuilt;
                         drawing.LazyRebuiltTiles += rebuilt;
                         drawing.LazyPassSegments += replay?.RebuiltSegments ?? segments.Count;
+                        drawing.LazyDirtyCells += replay?.DirtyCells ?? 0;
+                        drawing.LazyFrozenCells += replay?.FrozenCells ?? 0;
+                        drawing.LazyPatchExpansions += replay?.Expansions ?? 0;
                         frontier = Frontier();
                     }
                     else frontier = new V2ContactFront();
                     drawing.LazyRounds++;
-                    var pass = new V2LazyContactPass(round, completion, selected, drawing.Contacts - native,
+                    var pass = new V2LazyContactPass(round, selected, drawing.Contacts - native,
                         drawing.EmptyContacts - empty, drawing.PointContacts - points, drawing.ContactCurveHits - curveHits,
                         (drawing.Timing.GetValueOrDefault("native BrepBrep") - nativeTime).TotalSeconds,
                         rebuilt, tiles.Count, Stopwatch.GetElapsedTime(started).TotalSeconds);
                     drawing.LazyContactPasses.Add(pass);
                     progress?.Invoke(pass.ToString());
                 }
+                drawing.LazyPendingAtFixedPoint += lazy.PendingCount;
+                progress?.Invoke($"Lazy contact fixed point: {round} native batches, {lazy.PendingCount} inactive pairs.");
+                lazy.Dispose();
+                surfaceBounds.ReleaseContactTrees();
                 if (replay != null)
                 {
                     plan = Arrange(finalizeReplay: true);
@@ -707,6 +725,7 @@ internal static class V2DrawingSolver
             V2PlanarArrangement Arrange(bool frontierOnly = false, bool finalizeReplay = false)
             {
                 string issue = null;
+                bool useSavedTopology = replay is {Tiles.Count: > 0};
                 for (; refinement < 3; refinement++)
                 {
                     try
@@ -720,7 +739,8 @@ internal static class V2DrawingSolver
                                 Classify, cancel, progress, tiles, overlapTileArrangement,
                                 interior == null ? null : RetainInterior, interior,
                                 spilled || camera.Perspective || drawing.NativeMeshTriangles > 1_000_000,
-                                reportTileTotal, splitOnConvergence: accuracy == V2Accuracy.Fast,
+                                reportTileTotal, splitOnConvergence: accuracy == V2Accuracy.Fast || spilled,
+                                fast: accuracy == V2Accuracy.Fast,
                                 schedule: tileSchedule, windowScale: 1 << refinement, replay: replay,
                                 changed: finalizeReplay ? null : segments, fixedExtent: extent, frontierOnly: frontierOnly)
                             : V2PlanarArrangement.Build(segments, grid, cancel, segments.Count >= 1000 ? progress : null,
@@ -746,7 +766,7 @@ internal static class V2DrawingSolver
                         }
                         return result;
                     }
-                    catch (InvalidOperationException error)
+                    catch (InvalidOperationException error) when (!useSavedTopology && error is not V2LocalPatchException)
                     {
                         replay?.Tiles.Clear();
                         issue = error.Message;
@@ -836,21 +856,38 @@ internal static class V2DrawingSolver
             }
             if (inspection != null) ReportOwnership("before seam cleanup");
             depthPool.Finish();
+            inspectStitched?.Invoke(plan);
+            if (releaseInputs != null && collectOnDisk && groups.Length == 1 && backgrounds.Length == 0 &&
+                !focus.HasValue && inspection == null && hiddenMode == V2HiddenMode.None)
+            {
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+                if (tangencies.Detach(plan, cancel))
+                {
+                    index.Dispose();
+                    releaseInputs();
+                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+                    progress?.Invoke("Released source geometry after final 3D queries; retained exact tangent topology.");
+                }
+            }
             if (!collectMask && !useMasks)
             {
                 start = Stopwatch.GetTimestamp();
-                var cleaned = V2Slivers.Clean(plan, imageTolerance, millimetersPerUnit, cancel);
+                var cleaned = V2Slivers.Clean(plan, imageTolerance, millimetersPerUnit, cancel, progress);
                 plan = cleaned.Plan;
                 drawing.AbsorbedSlivers += cleaned.Absorbed;
                 drawing.FlattenedSteps += cleaned.Flattened;
                 Record("absorb and align sub-tolerance seams", start);
             }
+            if (plan.EdgeCount > 250000)
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
             if (inspection != null) ReportOwnership("after seam cleanup");
             start = Stopwatch.GetTimestamp();
             var regions = plan.Regions().ToArray();
+            progress?.Invoke($"Output topology: {regions.Length} region loops.");
             var chainBySide = new int[plan.EdgeCount * 2];
             var chains = plan.BoundaryChains(chainBySide);
-            Measure("walk region topology", start);
+            Record("walk region topology", start);
+            progress?.Invoke($"Output topology: {chains.Count} shared chains.");
             try
             {
                 long restoreStart = Stopwatch.GetTimestamp();
@@ -869,7 +906,7 @@ internal static class V2DrawingSolver
                     int id = i;
                     Restore(id);
                 }
-                Measure("initial chain compatibility", restoreStart);
+                Record("initial chain compatibility", restoreStart);
                 var incident = new (int First, int Second)[chains.Count];
                 Array.Fill(incident, (-1, -1));
                 var fills = new List<Brep>[regions.Length];
@@ -892,7 +929,7 @@ internal static class V2DrawingSolver
                             foreach (int chain in RegionChains(r))
                                 if (chains[chain].Upgraded) retry.Add(chain);
                     }
-                    Measure("initial planar fills", fillStart);
+                    Record("initial planar fills", fillStart);
                     long replayStart = Stopwatch.GetTimestamp();
                     var dirty = new HashSet<int>();
                     foreach (int chain in retry)
@@ -995,8 +1032,9 @@ internal static class V2DrawingSolver
                         if (!tangentEdges) { drawing.TangentChainsFiltered++; continue; }
                         kind = "Tangent";
                     }
-                    drawing.Curves.Add(new DrawnEdge(chain.Geometry.DuplicateCurve(), id.Source, id.FaceIndex,
+                    drawing.Curves.Add(new DrawnEdge(chain.DuplicateGeometry(), id.Source, id.FaceIndex,
                         kind, neighbor != owner ? faces[neighbor].Id.Source : "", fit));
+                    chain.Dispose();
                 }
 
                 void Restore(int id)
@@ -1013,8 +1051,9 @@ internal static class V2DrawingSolver
                     {
                         if (hit.Id == id) return;
                         var neighbor = chains[hit.Id];
-                        if (V2EdgeChain.Compatible(curve, neighbor.OriginalGeometry, fit * .01) &&
-                            (!neighbor.Upgraded || V2EdgeChain.Compatible(curve, neighbor.Geometry, fit * .01))) return;
+                        using var original = neighbor.CreateOriginalGeometry();
+                        if (V2EdgeChain.Compatible(curve, original, fit * .01) &&
+                            (!neighbor.Upgraded || V2EdgeChain.Compatible(curve, neighbor.RestoredGeometry, fit * .01))) return;
                         clear = false;
                         hit.Cancel = true;
                     });
@@ -1196,7 +1235,7 @@ internal static class V2DrawingSolver
 
             Curve Oriented(int id)
             {
-                var copy = chains[Math.Abs(id) - 1].Geometry.DuplicateCurve();
+                var copy = chains[Math.Abs(id) - 1].DuplicateGeometry();
                 if (id > 0 || copy.Reverse()) return copy;
                 copy.Dispose();
                 return null;
@@ -1290,7 +1329,7 @@ internal static class V2DrawingSolver
     }
 
     private static IEnumerable<V2Face> ReadFaces(IReadOnlyList<Input> inputs, double fit, SourceFaceId? focus, Action cancel,
-        IProjectionCamera camera, V2ClipPlanes clips)
+        IProjectionCamera camera, V2ClipPlanes clips, V2HiddenMode hiddenMode, V2Drawing drawing)
     {
         Rect Bounds(BoundingBox box) => camera?.Bounds(box) ?? Rect.From(box);
         Rect? bounds = null;
@@ -1302,8 +1341,9 @@ internal static class V2DrawingSolver
         foreach (var input in inputs.OrderBy(input => input.Source, StringComparer.Ordinal))
         {
             cancel?.Invoke();
-            if (clips.Active && clips.Discards(input.Bounds)) continue;
-            if (bounds is Rect zone && !zone.Intersection(Bounds(input.Bounds).Grow(fit)).HasArea)
+            var inputBounds = input.Bounds;
+            if (clips.Active && clips.Discards(inputBounds)) continue;
+            if (bounds is Rect zone && !zone.Intersection(Bounds(inputBounds).Grow(fit)).HasArea)
                 continue;
             if (input.NativeMeshDepth != null || input.NativeMesh != null)
             {
@@ -1314,6 +1354,8 @@ internal static class V2DrawingSolver
                         { Triangles = triangles, ProjectedBounds = screen, Opaque = input.Opaque };
                 continue;
             }
+            int outwardSign = !focus.HasValue && hiddenMode is (V2HiddenMode.None or V2HiddenMode.Occluded)
+                ? V2BackfaceCulling.OutwardSign(input, inputBounds, camera, clips, fit) : 0;
             foreach (var face in input.Brep.Faces)
             {
                 var box = face.GetBoundingBox(true);
@@ -1328,6 +1370,16 @@ internal static class V2DrawingSolver
                         ? Math.Abs(planar.DistanceTo(Point3d.Origin)) <= Math.Max(1, box.Max.MaximumCoordinate) * 1e-13
                         : Math.Abs(planar.Normal.Z) <= 1e-10)
                         continue;
+                    // A rear cap and the trim of its curved neighbor share the
+                    // near-tangent transition to other, flush geometry. Keep
+                    // the complete support at this junction for exact depth
+                    // and contact, even when the cap itself faces away.
+                    if (outwardSign != 0 && V2BackfaceCulling.IsBackPlane(face, planar, box, outwardSign,
+                        camera?.Perspective == true, fit) && !V2BackfaceCulling.SharesCurvedRim(face, fit * .01))
+                    {
+                        drawing.BackfaceCulled++;
+                        continue;
+                    }
                 }
                 yield return new V2Face(new SourceFaceId(input.Source, face.FaceIndex), face, box, plane, input.FromMesh)
                     { ProjectedBounds = screen, Opaque = input.Opaque };

@@ -89,6 +89,12 @@ public static class VerifyV2LineFinish
         Require(clean.Flattened == 2 && common.All(edge => edge.A.Y == edge.B.Y) &&
             common.Select(edge => edge.A.Y).Distinct().Count() == 1,
             "A one-grid staircase survived or the two sides changed different borders.");
+        var bounded = V2Slivers.Clean(arrangement, fit, 1, null, rebuildTileLimit: 3);
+        var boundedShared = bounded.Plan.VisibleEdges().Where(edge => edge.Left >= 0 && edge.Right >= 0).ToArray();
+        Require(bounded.Flattened == clean.Flattened && boundedShared.Length > 0 &&
+            boundedShared.All(edge => edge.A.Y == common[0].A.Y && edge.B.Y == common[0].A.Y) &&
+            bounded.Plan.Regions().Select(region => region.Owner).Order().SequenceEqual(new[] {0, 1}),
+            "A streamed staircase rewrite changed the shared rail or its closed regions.");
 
         string folder = Environment.GetEnvironmentVariable("BMA2D_LINE_FINISH_OUTPUT") ?? throw new ArgumentException("Output directory");
         Directory.CreateDirectory(folder);
